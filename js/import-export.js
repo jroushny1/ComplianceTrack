@@ -5,6 +5,7 @@
 
 import db, { DB_VERSION } from './db.js';
 import { setHeaderTitle, toast, openModal, closeModal, escapeHtml } from './ui.js';
+import { invalidateListCache } from './candidates.js';
 
 // Load PapaParse (non-module script, available as global Papa)
 let Papa;
@@ -409,9 +410,14 @@ async function executeImport() {
   const BATCH_SIZE = 100;
   let created = 0, updated = 0, skipped = 0, errors = 0;
 
+  // Pre-load existing candidates for O(1) lookup (avoids N+1)
+  const allExisting = await db.getAllCandidates();
+  const existingMap = new Map(allExisting.map(c => [c.id, c]));
+
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     const toCreate = [];
+    const toUpdate = [];
 
     for (const row of batch) {
       try {
@@ -420,7 +426,7 @@ async function executeImport() {
           continue;
         }
         if (row._existingId && row._dupAction === 'update') {
-          const existing = await db.getCandidate(row._existingId);
+          const existing = existingMap.get(row._existingId);
           if (existing) {
             for (const [key, value] of Object.entries(row)) {
               if (key.startsWith('_')) continue;
@@ -428,8 +434,8 @@ async function executeImport() {
                 existing[key] = value;
               }
             }
-            await db.updateCandidate(existing);
-            updated++;
+            existing.updatedAt = new Date().toISOString();
+            toUpdate.push(existing);
             continue;
           }
         }
@@ -445,13 +451,23 @@ async function executeImport() {
       }
     }
 
-    // Batch write all new candidates in a single transaction
+    // Batch write creates in a single transaction
     if (toCreate.length > 0) {
       try {
         await db.addCandidatesBatch(toCreate);
         created += toCreate.length;
       } catch (err) {
         errors += toCreate.length;
+      }
+    }
+
+    // Batch write updates in a single transaction
+    if (toUpdate.length > 0) {
+      try {
+        await db.addCandidatesBatch(toUpdate);
+        updated += toUpdate.length;
+      } catch (err) {
+        errors += toUpdate.length;
       }
     }
 
@@ -463,6 +479,8 @@ async function executeImport() {
     // Yield to main thread
     await new Promise(r => setTimeout(r, 0));
   }
+
+  invalidateListCache();
 
   // Step 4: Verify
   renderVerifyStep(created, updated, skipped, errors);
@@ -550,12 +568,13 @@ async function handleJsonRestore(file) {
     // Auto-backup current data first
     await handleBackup(true);
 
-    // Batch import — collect new candidates, then write in one transaction
+    // Batch import — single getAllCandidates + Set lookup (avoids N+1)
+    const existing = await db.getAllCandidates();
+    const existingIds = new Set(existing.map(c => c.id));
     const toImport = [];
     let skipped = 0;
     for (const c of data.candidates) {
-      const existing = await db.getCandidate(c.id);
-      if (existing) {
+      if (existingIds.has(c.id)) {
         skipped++;
       } else {
         toImport.push(c);
@@ -566,15 +585,17 @@ async function handleJsonRestore(file) {
       await db.addCandidatesBatch(toImport);
     }
 
-    // Restore settings
+    // Restore settings (whitelist known keys only)
+    const SETTINGS_WHITELIST = new Set(['certAlertDays', 'customCertTypes']);
     if (data.settings && Array.isArray(data.settings)) {
       for (const s of data.settings) {
-        if (s.key && s.value !== undefined) {
+        if (s.key && SETTINGS_WHITELIST.has(s.key) && s.value !== undefined) {
           await db.put('settings', s);
         }
       }
     }
 
+    invalidateListCache();
     toast(`Restored ${toImport.length} candidates (${skipped} already existed)`, { type: 'success' });
     renderImportExport();
   } catch (err) {

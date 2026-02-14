@@ -200,7 +200,3 @@ export function setHeaderTitle(title) {
 export function setHeaderActions(html) {
   document.getElementById('header-actions').innerHTML = html;
 }
-
-export function clearHeaderActions() {
-  document.getElementById('header-actions').innerHTML = '';
-}

@@ -94,27 +94,6 @@ class ComplianceDB {
     });
   }
 
-  async count(storeName) {
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction(storeName, 'readonly');
-      const store = tx.objectStore(storeName);
-      const request = store.count();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async getByIndex(storeName, indexName, value) {
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction(storeName, 'readonly');
-      const store = tx.objectStore(storeName);
-      const index = store.index(indexName);
-      const request = index.getAll(value);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
   async clear(storeName) {
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(storeName, 'readwrite');
@@ -165,6 +144,9 @@ class ComplianceDB {
   }
 
   async addCandidatesBatch(candidates) {
+    for (const c of candidates) {
+      validateCandidate(c);
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction('candidates', 'readwrite');
       const store = tx.objectStore('candidates');
@@ -188,15 +170,6 @@ class ComplianceDB {
     return this.getAll('candidates');
   }
 
-  async findByExternalId(externalId) {
-    const results = await this.getByIndex('candidates', 'externalId', externalId);
-    return results[0] || null;
-  }
-
-  async findByEmail(email) {
-    return this.getByIndex('candidates', 'email', email);
-  }
-
   // ── Settings Helpers ──────────────────────────────────────
 
   async getSetting(key) {
@@ -206,15 +179,6 @@ class ComplianceDB {
 
   async setSetting(key, value) {
     await this.put('settings', { key, value });
-  }
-
-  async getSettings() {
-    const all = await this.getAll('settings');
-    const map = {};
-    for (const { key, value } of all) {
-      map[key] = value;
-    }
-    return map;
   }
 
   // ── Export / Import ───────────────────────────────────────
@@ -230,26 +194,6 @@ class ComplianceDB {
     };
   }
 
-  async importCandidates(candidates) {
-    const BATCH_SIZE = 100;
-    let imported = 0;
-    for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
-      const batch = candidates.slice(i, i + BATCH_SIZE);
-      await new Promise((resolve, reject) => {
-        const tx = this.db.transaction('candidates', 'readwrite');
-        const store = tx.objectStore('candidates');
-        for (const c of batch) {
-          store.put(c);
-        }
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-      imported += batch.length;
-      // Yield to main thread between batches
-      await new Promise(r => setTimeout(r, 0));
-    }
-    return imported;
-  }
 }
 
 // ── Schema Validation ─────────────────────────────────────────

@@ -4,7 +4,7 @@
  */
 
 import db from './db.js';
-import { initModalListeners, setHeaderTitle, setHeaderActions, clearHeaderActions, toast, escapeHtml, isDirty, clearDirty } from './ui.js';
+import { initModalListeners, setHeaderTitle, setHeaderActions, toast, escapeHtml, formatDate, isDirty, clearDirty } from './ui.js';
 import { renderCandidateList, renderCandidateDetail, renderCandidateForm } from './candidates.js';
 import { renderImportExport, handleBackup } from './import-export.js';
 
@@ -39,7 +39,7 @@ function resolveRoute(view, id, subview) {
 
   const content = document.getElementById('content');
   content.innerHTML = '';
-  clearHeaderActions();
+  setHeaderActions('');
 
   if (view === 'candidate' && id && subview === 'edit') {
     routes['candidate-edit'](id);
@@ -60,14 +60,6 @@ function resolveRoute(view, id, subview) {
     return true;
   }
   return false;
-}
-
-export function navigate(hash) {
-  if (isDirty()) {
-    if (!window.confirm('You have unsaved changes. Discard them?')) return;
-    clearDirty();
-  }
-  location.hash = hash;
 }
 
 // ── Dashboard ───────────────────────────────────────────────
@@ -136,7 +128,7 @@ async function renderDashboard() {
               <div class="cert-alert-badge">EXPIRED</div>
               <div class="cert-alert-info">
                 <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
-                <div class="cert-alert-date">Expired ${formatAlertDate(cert.expirationDate)}</div>
+                <div class="cert-alert-date">Expired ${formatDate(cert.expirationDate)}</div>
               </div>
             </div>
           `).join('')}
@@ -145,7 +137,7 @@ async function renderDashboard() {
               <div class="cert-alert-badge">${cert.daysRemaining}d</div>
               <div class="cert-alert-info">
                 <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
-                <div class="cert-alert-date">Expires ${formatAlertDate(cert.expirationDate)}</div>
+                <div class="cert-alert-date">Expires ${formatDate(cert.expirationDate)}</div>
               </div>
             </div>
           `).join('')}
@@ -296,13 +288,6 @@ async function renderSettings() {
       toast('Failed to clear data: ' + err.message, { type: 'error' });
     }
   });
-}
-
-// ── Helpers ─────────────────────────────────────────────────
-
-function formatAlertDate(iso) {
-  if (!iso) return '';
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 // ── Sidebar Toggle ──────────────────────────────────────────

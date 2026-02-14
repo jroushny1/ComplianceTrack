@@ -20,6 +20,8 @@ const searchCtrl = new SearchController((results, query) => {
 // Cached candidates for the current list view session (avoids getAll per keystroke)
 let _listCache = null;
 
+export function invalidateListCache() { _listCache = null; }
+
 export async function renderCandidateList() {
   setHeaderTitle('Candidates');
   setHeaderActions(`<a href="#/candidate/new" class="btn btn-primary btn-sm">+ Add Candidate</a>`);
@@ -363,7 +365,7 @@ export async function renderCandidateDetail(id) {
 function detailField(label, value, href) {
   if (!value) return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value text-secondary">—</span></div>`;
   const display = escapeHtml(value);
-  const val = href ? `<a href="${href}" class="link">${display}</a>` : display;
+  const val = href ? `<a href="${escapeHtml(href)}" class="link">${display}</a>` : display;
   return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value">${val}</span></div>`;
 }
 
