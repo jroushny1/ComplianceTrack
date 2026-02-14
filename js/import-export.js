@@ -3,9 +3,11 @@
  * 4-step workflow: Upload+Map → Preview+Validate → Execute → Verify
  */
 
-import db, { DB_VERSION } from './db.js';
+import db, { DB_VERSION, validateClient, validateJob, validatePipelineEntry } from './db.js';
 import { setHeaderTitle, toast, openModal, closeModal, escapeHtml } from './ui.js';
 import { invalidateListCache } from './candidates.js';
+import { invalidateClientListCache } from './clients.js';
+import { invalidateJobListCache } from './jobs.js';
 
 // Load PapaParse (non-module script, available as global Papa)
 let Papa;
@@ -585,6 +587,49 @@ async function handleJsonRestore(file) {
       await db.addCandidatesBatch(toImport);
     }
 
+    // Restore clients, jobs, pipeline (Phase 2 data, skip duplicates by ID)
+    // Validate each entity and batch write in single transactions
+    let clientsImported = 0, jobsImported = 0, pipelineImported = 0;
+
+    if (data.clients && Array.isArray(data.clients)) {
+      const existingClients = new Set((await db.getAllClients()).map(c => c.id));
+      const toImportClients = [];
+      for (const c of data.clients) {
+        if (!c.id || existingClients.has(c.id)) continue;
+        try { validateClient(c); toImportClients.push(c); } catch { /* skip invalid */ }
+      }
+      if (toImportClients.length > 0) {
+        await db.batchPut('clients', toImportClients);
+        clientsImported = toImportClients.length;
+      }
+    }
+
+    if (data.jobs && Array.isArray(data.jobs)) {
+      const existingJobs = new Set((await db.getAllJobs()).map(j => j.id));
+      const toImportJobs = [];
+      for (const j of data.jobs) {
+        if (!j.id || existingJobs.has(j.id)) continue;
+        try { validateJob(j); toImportJobs.push(j); } catch { /* skip invalid */ }
+      }
+      if (toImportJobs.length > 0) {
+        await db.batchPut('jobs', toImportJobs);
+        jobsImported = toImportJobs.length;
+      }
+    }
+
+    if (data.pipeline && Array.isArray(data.pipeline)) {
+      const existingPipeline = new Set((await db.getAll('pipeline')).map(p => p.id));
+      const toImportPipeline = [];
+      for (const p of data.pipeline) {
+        if (!p.id || existingPipeline.has(p.id)) continue;
+        try { validatePipelineEntry(p); toImportPipeline.push(p); } catch { /* skip invalid */ }
+      }
+      if (toImportPipeline.length > 0) {
+        await db.batchPut('pipeline', toImportPipeline);
+        pipelineImported = toImportPipeline.length;
+      }
+    }
+
     // Restore settings (whitelist known keys only)
     const SETTINGS_WHITELIST = new Set(['certAlertDays', 'customCertTypes']);
     if (data.settings && Array.isArray(data.settings)) {
@@ -596,7 +641,14 @@ async function handleJsonRestore(file) {
     }
 
     invalidateListCache();
-    toast(`Restored ${toImport.length} candidates (${skipped} already existed)`, { type: 'success' });
+    invalidateClientListCache();
+    invalidateJobListCache();
+
+    const parts = [`${toImport.length} candidates`];
+    if (clientsImported > 0) parts.push(`${clientsImported} clients`);
+    if (jobsImported > 0) parts.push(`${jobsImported} jobs`);
+    if (pipelineImported > 0) parts.push(`${pipelineImported} pipeline entries`);
+    toast(`Restored ${parts.join(', ')}${skipped > 0 ? ` (${skipped} candidates already existed)` : ''}`, { type: 'success' });
     renderImportExport();
   } catch (err) {
     toast(`Failed to restore: ${err.message}`, { type: 'error' });

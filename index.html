@@ -39,6 +39,12 @@
         <li><a href="#/candidates" class="nav-link" data-view="candidates">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           Candidates</a></li>
+        <li><a href="#/clients" class="nav-link" data-view="clients">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          Clients</a></li>
+        <li><a href="#/jobs" class="nav-link" data-view="jobs">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
+          Jobs</a></li>
         <li><a href="#/import" class="nav-link" data-view="import">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Import / Export</a></li>
@@ -81,10 +87,16 @@
   <!-- Toast Container -->
   <div id="toast-container"></div>
 
+  <!-- SortableJS (non-module, exposes global Sortable) -->
+  <script src="lib/Sortable.min.js"></script>
+
   <!-- Scripts (ES Modules) -->
   <script type="module" src="js/db.js"></script>
   <script type="module" src="js/ui.js"></script>
   <script type="module" src="js/candidates.js"></script>
+  <script type="module" src="js/clients.js"></script>
+  <script type="module" src="js/jobs.js"></script>
+  <script type="module" src="js/pipeline.js"></script>
   <script type="module" src="js/import-export.js"></script>
   <script type="module" src="js/app.js"></script>
 

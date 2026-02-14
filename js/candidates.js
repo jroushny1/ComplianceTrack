@@ -3,7 +3,7 @@
  */
 
 import db, { getCertStatus, getCertUrgency, getCertDaysRemaining, FINRA_LICENSES, COMPLIANCE_CERTS } from './db.js';
-import { openModal, closeModal, confirm, toast, SearchController, setHeaderTitle, setHeaderActions, formatDate, escapeHtml, markDirty, clearDirty } from './ui.js';
+import { openModal, closeModal, confirm, toast, SearchController, setHeaderTitle, setHeaderActions, formatDate, escapeHtml, markDirty, clearDirty, detailField } from './ui.js';
 
 // ── State ───────────────────────────────────────────────────
 
@@ -319,6 +319,7 @@ export async function renderCandidateDetail(id) {
     if (!ok) return;
     try {
       const snapshot = { ...candidate, certifications: [...(candidate.certifications || [])] };
+      await db.deletePipelineByCandidate(id);
       await db.deleteCandidate(id);
       _listCache = null;
       toast(`Deleted ${candidate.firstName} ${candidate.lastName}`, {
@@ -360,13 +361,6 @@ export async function renderCandidateDetail(id) {
       removeCert(candidate, idx);
     }
   });
-}
-
-function detailField(label, value, href) {
-  if (!value) return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value text-secondary">—</span></div>`;
-  const display = escapeHtml(value);
-  const val = href ? `<a href="${escapeHtml(href)}" class="link">${display}</a>` : display;
-  return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value">${val}</span></div>`;
 }
 
 function formatSalary(min, max) {

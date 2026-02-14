@@ -200,3 +200,14 @@ export function setHeaderTitle(title) {
 export function setHeaderActions(html) {
   document.getElementById('header-actions').innerHTML = html;
 }
+
+// ── Detail Field Helper ──────────────────────────────────────
+
+export function detailField(label, value, href) {
+  if (!value || value === '—') {
+    return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value text-secondary">—</span></div>`;
+  }
+  const display = escapeHtml(String(value));
+  const val = href ? `<a href="${escapeHtml(href)}" class="link">${display}</a>` : display;
+  return `<div class="detail-field"><span class="detail-label">${label}</span><span class="detail-value">${val}</span></div>`;
+}

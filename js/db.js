@@ -1,10 +1,10 @@
 /**
  * db.js — IndexedDB setup, stores, CRUD helpers
- * ComplianceTrack v1 (Phase 1: candidates + settings)
+ * ComplianceTrack v2 (Phase 1: candidates + settings, Phase 2: jobs, clients, pipeline)
  */
 
 const DB_NAME = 'ComplianceTrackDB';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 class ComplianceDB {
   constructor() {
@@ -36,7 +36,22 @@ class ComplianceDB {
 
           db.createObjectStore('settings', { keyPath: 'key' });
         }
-        // Phase 2: if (oldVersion < 2) { ... jobs, clients, pipeline }
+        if (oldVersion < 2) {
+          // Phase 2 stores
+          const clients = db.createObjectStore('clients', { keyPath: 'id' });
+          clients.createIndex('companyName', 'companyName');
+          clients.createIndex('externalId', 'externalId');
+
+          const jobs = db.createObjectStore('jobs', { keyPath: 'id' });
+          jobs.createIndex('clientId', 'clientId');
+          jobs.createIndex('status', 'status');
+          jobs.createIndex('externalId', 'externalId');
+
+          const pipeline = db.createObjectStore('pipeline', { keyPath: 'id' });
+          pipeline.createIndex('jobId', 'jobId');
+          pipeline.createIndex('candidateId', 'candidateId');
+          pipeline.createIndex('candidateJob', ['candidateId', 'jobId'], { unique: true });
+        }
         // Phase 3: if (oldVersion < 3) { ... activities }
       };
     });
@@ -170,6 +185,217 @@ class ComplianceDB {
     return this.getAll('candidates');
   }
 
+  // ── Client Helpers ──────────────────────────────────────
+
+  createClient(data = {}) {
+    const now = new Date().toISOString();
+    return {
+      id: crypto.randomUUID(),
+      companyName: data.companyName || '',
+      industrySector: data.industrySector || '',
+      contacts: data.contacts || [],
+      notes: data.notes || '',
+      externalId: data.externalId ?? null,
+      createdAt: data.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  async addClient(data) {
+    const client = this.createClient(data);
+    validateClient(client);
+    await this.add('clients', client);
+    return client;
+  }
+
+  async updateClient(client) {
+    validateClient(client);
+    client.updatedAt = new Date().toISOString();
+    await this.put('clients', client);
+    return client;
+  }
+
+  async deleteClient(id) { await this.delete('clients', id); }
+  async getClient(id) { return this.get('clients', id); }
+  async getAllClients() { return this.getAll('clients'); }
+
+  // ── Job Helpers ────────────────────────────────────────
+
+  static DEFAULT_STAGES = ['Sourced', 'Screen', 'Submitted', 'Interview', 'Offer', 'Placed'];
+
+  createJob(data = {}) {
+    const now = new Date().toISOString();
+    return {
+      id: crypto.randomUUID(),
+      title: data.title || '',
+      clientId: data.clientId || '',
+      description: data.description || '',
+      requirements: data.requirements || '',
+      requiredCerts: data.requiredCerts || [],
+      preferredCerts: data.preferredCerts || [],
+      compensationMin: data.compensationMin ?? null,
+      compensationMax: data.compensationMax ?? null,
+      compensationType: data.compensationType || 'salary',
+      location: data.location || '',
+      remote: data.remote ?? false,
+      status: data.status || 'open',
+      statusDate: data.statusDate || now,
+      stages: data.stages || [...ComplianceDB.DEFAULT_STAGES],
+      externalId: data.externalId ?? null,
+      createdAt: data.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  async addJob(data) {
+    const job = this.createJob(data);
+    validateJob(job);
+    await this.add('jobs', job);
+    return job;
+  }
+
+  async updateJob(job) {
+    validateJob(job);
+    job.updatedAt = new Date().toISOString();
+    await this.put('jobs', job);
+    return job;
+  }
+
+  async deleteJob(id) { await this.delete('jobs', id); }
+  async getJob(id) { return this.get('jobs', id); }
+  async getAllJobs() { return this.getAll('jobs'); }
+
+  async getJobsByClient(clientId) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('jobs', 'readonly');
+      const index = tx.objectStore('jobs').index('clientId');
+      const request = index.getAll(clientId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  // ── Pipeline Helpers ───────────────────────────────────
+
+  createPipelineEntry(data = {}) {
+    const now = new Date().toISOString();
+    const stage = data.stage || 'Sourced';
+    return {
+      id: crypto.randomUUID(),
+      candidateId: data.candidateId || '',
+      jobId: data.jobId || '',
+      stage,
+      position: data.position ?? 0,
+      history: data.history || [{ stage, date: now, notes: 'Added to pipeline' }],
+      createdAt: data.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  async addToPipeline(data) {
+    const entry = this.createPipelineEntry(data);
+    validatePipelineEntry(entry);
+    await this.add('pipeline', entry);
+    return entry;
+  }
+
+  async updatePipelineEntry(entry) {
+    validatePipelineEntry(entry);
+    entry.updatedAt = new Date().toISOString();
+    await this.put('pipeline', entry);
+    return entry;
+  }
+
+  async batchPut(storeName, items) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      for (const item of items) store.put(item);
+      tx.oncomplete = () => resolve(items.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async batchUpdatePipelinePositions(updates) {
+    // Read all entries in one transaction
+    const entries = new Map();
+    await new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readonly');
+      const store = tx.objectStore('pipeline');
+      for (const u of updates) {
+        const req = store.get(u.id);
+        req.onsuccess = () => { if (req.result) entries.set(u.id, req.result); };
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    // Apply updates in memory
+    const now = new Date().toISOString();
+    for (const u of updates) {
+      const entry = entries.get(u.id);
+      if (!entry) continue;
+      entry.position = u.position;
+      if (u.stage !== undefined) entry.stage = u.stage;
+      if (u.historyEntry) entry.history.push(u.historyEntry);
+      entry.updatedAt = now;
+    }
+
+    // Write all in one transaction
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readwrite');
+      const store = tx.objectStore('pipeline');
+      for (const entry of entries.values()) store.put(entry);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async deletePipelineEntry(id) { await this.delete('pipeline', id); }
+  async getPipelineEntry(id) { return this.get('pipeline', id); }
+
+  async getPipelineByJob(jobId) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readonly');
+      const index = tx.objectStore('pipeline').index('jobId');
+      const request = index.getAll(jobId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getPipelineByCandidate(candidateId) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readonly');
+      const index = tx.objectStore('pipeline').index('candidateId');
+      const request = index.getAll(candidateId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async deletePipelineByJob(jobId) {
+    const entries = await this.getPipelineByJob(jobId);
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readwrite');
+      const store = tx.objectStore('pipeline');
+      for (const e of entries) store.delete(e.id);
+      tx.oncomplete = () => resolve(entries.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async deletePipelineByCandidate(candidateId) {
+    const entries = await this.getPipelineByCandidate(candidateId);
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('pipeline', 'readwrite');
+      const store = tx.objectStore('pipeline');
+      for (const e of entries) store.delete(e.id);
+      tx.oncomplete = () => resolve(entries.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   // ── Settings Helpers ──────────────────────────────────────
 
   async getSetting(key) {
@@ -184,12 +410,20 @@ class ComplianceDB {
   // ── Export / Import ───────────────────────────────────────
 
   async exportAll() {
-    const candidates = await this.getAll('candidates');
-    const settings = await this.getAll('settings');
+    const [candidates, clients, jobs, pipeline, settings] = await Promise.all([
+      this.getAll('candidates'),
+      this.getAll('clients'),
+      this.getAll('jobs'),
+      this.getAll('pipeline'),
+      this.getAll('settings'),
+    ]);
     return {
       version: DB_VERSION,
       exportedAt: new Date().toISOString(),
       candidates,
+      clients,
+      jobs,
+      pipeline,
       settings,
     };
   }
@@ -210,6 +444,42 @@ export function validateCandidate(data) {
   }
   if (data.skills && !Array.isArray(data.skills)) {
     throw new Error('skills must be an array');
+  }
+}
+
+export function validateClient(data) {
+  if (!data.companyName || !String(data.companyName).trim()) {
+    throw new Error('Missing required field: companyName');
+  }
+  if (data.contacts && !Array.isArray(data.contacts)) {
+    throw new Error('contacts must be an array');
+  }
+}
+
+export function validateJob(data) {
+  if (!data.title || !String(data.title).trim()) {
+    throw new Error('Missing required field: title');
+  }
+  if (data.requiredCerts && !Array.isArray(data.requiredCerts)) {
+    throw new Error('requiredCerts must be an array');
+  }
+  if (data.preferredCerts && !Array.isArray(data.preferredCerts)) {
+    throw new Error('preferredCerts must be an array');
+  }
+  if (data.stages && !Array.isArray(data.stages)) {
+    throw new Error('stages must be an array');
+  }
+}
+
+export function validatePipelineEntry(data) {
+  if (!data.candidateId) {
+    throw new Error('Missing required field: candidateId');
+  }
+  if (!data.jobId) {
+    throw new Error('Missing required field: jobId');
+  }
+  if (!data.stage) {
+    throw new Error('Missing required field: stage');
   }
 }
 

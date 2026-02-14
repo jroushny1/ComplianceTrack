@@ -6,6 +6,9 @@
 import db from './db.js';
 import { initModalListeners, setHeaderTitle, setHeaderActions, toast, escapeHtml, formatDate, isDirty, clearDirty } from './ui.js';
 import { renderCandidateList, renderCandidateDetail, renderCandidateForm } from './candidates.js';
+import { renderClientList, renderClientDetail, renderClientForm } from './clients.js';
+import { renderJobList, renderJobDetail, renderJobForm } from './jobs.js';
+import { renderPipeline } from './pipeline.js';
 import { renderImportExport, handleBackup } from './import-export.js';
 
 // ── Router ──────────────────────────────────────────────────
@@ -16,6 +19,15 @@ const routes = {
   candidate: renderCandidateDetail,
   'candidate-new': () => renderCandidateForm(null),
   'candidate-edit': (id) => renderCandidateForm(id),
+  clients: renderClientList,
+  client: renderClientDetail,
+  'client-new': () => renderClientForm(null),
+  'client-edit': (id) => renderClientForm(id),
+  jobs: renderJobList,
+  job: renderJobDetail,
+  'job-new': () => renderJobForm(null),
+  'job-edit': (id) => renderJobForm(id),
+  pipeline: renderPipeline,
   import: renderImportExport,
   settings: renderSettings,
 };
@@ -32,25 +44,33 @@ function handleRoute() {
 
 function resolveRoute(view, id, subview) {
   // Update sidebar active state
+  const viewAliases = {
+    candidate: 'candidates',
+    client: 'clients',
+    job: 'jobs',
+    pipeline: 'jobs',
+  };
   document.querySelectorAll('.nav-link').forEach(link => {
     const linkView = link.dataset.view;
-    link.classList.toggle('active', linkView === view || (view === 'candidate' && linkView === 'candidates'));
+    link.classList.toggle('active', linkView === view || linkView === viewAliases[view]);
   });
 
   const content = document.getElementById('content');
   content.innerHTML = '';
   setHeaderActions('');
 
-  if (view === 'candidate' && id && subview === 'edit') {
-    routes['candidate-edit'](id);
-    return true;
+  // Entity routes: candidate, client, job (all follow same pattern)
+  for (const entity of ['candidate', 'client', 'job']) {
+    if (view === entity) {
+      if (id && subview === 'edit') { routes[`${entity}-edit`](id); return true; }
+      if (id === 'new') { routes[`${entity}-new`](); return true; }
+      if (id) { routes[entity](id); return true; }
+    }
   }
-  if (view === 'candidate' && id === 'new') {
-    routes['candidate-new']();
-    return true;
-  }
-  if (view === 'candidate' && id) {
-    routes['candidate'](id);
+
+  // Pipeline view (takes jobId as id param)
+  if (view === 'pipeline' && id) {
+    routes['pipeline'](id);
     return true;
   }
 
@@ -68,15 +88,22 @@ async function renderDashboard() {
   setHeaderTitle('Dashboard');
   const content = document.getElementById('content');
 
-  let candidates, alertDays;
+  let candidates, jobs, clients, alertDays;
   try {
-    candidates = await db.getAllCandidates();
-    alertDays = (await db.getSetting('certAlertDays')) || 60;
+    [candidates, jobs, clients, alertDays] = await Promise.all([
+      db.getAllCandidates(),
+      db.getAllJobs(),
+      db.getAllClients(),
+      db.getSetting('certAlertDays'),
+    ]);
+    alertDays = alertDays || 60;
   } catch (err) {
     content.innerHTML = `<div class="empty-state"><p>Failed to load dashboard data.</p></div>`;
     toast('Database error: ' + err.message, { type: 'error' });
     return;
   }
+
+  const openJobs = jobs.filter(j => j.status === 'open');
 
   // Compute cert stats
   let totalCerts = 0;
@@ -106,8 +133,12 @@ async function renderDashboard() {
           <div class="metric-label">Candidates</div>
         </div>
         <div class="metric-card">
-          <div class="metric-value">${totalCerts}</div>
-          <div class="metric-label">Certifications</div>
+          <div class="metric-value">${openJobs.length}</div>
+          <div class="metric-label">Open Jobs</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${clients.length}</div>
+          <div class="metric-label">Clients</div>
         </div>
         <div class="metric-card metric-card--warning">
           <div class="metric-value">${expiringSoon.length}</div>
@@ -145,12 +176,30 @@ async function renderDashboard() {
       </div>
       ` : ''}
 
-      ${candidates.length === 0 ? `
+      ${openJobs.length > 0 ? `
+      <div class="dashboard-section">
+        <h2 class="section-title">Open Jobs</h2>
+        <div class="candidate-list compact">
+          ${openJobs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5).map(j => {
+            const clientName = clients.find(c => c.id === j.clientId)?.companyName || '';
+            return `
+            <a href="#/job/${j.id}" class="candidate-row">
+              <div class="candidate-name">${escapeHtml(j.title)}</div>
+              <div class="candidate-meta">${clientName ? escapeHtml(clientName) + ' — ' : ''}${escapeHtml(j.location || '')}${j.remote ? ' (Remote)' : ''}</div>
+            </a>`;
+          }).join('')}
+        </div>
+        ${openJobs.length > 5 ? `<a href="#/jobs" class="btn btn-secondary btn-block">View All Jobs</a>` : ''}
+      </div>
+      ` : ''}
+
+      ${candidates.length === 0 && jobs.length === 0 ? `
       <div class="empty-state">
         <h2>Welcome to ComplianceTrack</h2>
-        <p>Get started by adding your first candidate or importing data from Loxo.</p>
+        <p>Get started by adding your first candidate, client, or importing data from Loxo.</p>
         <div class="empty-actions">
           <a href="#/candidate/new" class="btn btn-primary">Add Candidate</a>
+          <a href="#/client/new" class="btn btn-secondary">Add Client</a>
           <a href="#/import" class="btn btn-secondary">Import Data</a>
         </div>
       </div>
@@ -280,8 +329,13 @@ async function renderSettings() {
   document.getElementById('btn-clear-all').addEventListener('click', async () => {
     if (!window.confirm('This will permanently delete ALL data. Export a backup first. Continue?')) return;
     try {
-      await db.clear('candidates');
-      await db.clear('settings');
+      await Promise.all([
+        db.clear('candidates'),
+        db.clear('clients'),
+        db.clear('jobs'),
+        db.clear('pipeline'),
+        db.clear('settings'),
+      ]);
       toast('All data cleared', { type: 'info' });
       renderSettings();
     } catch (err) {
