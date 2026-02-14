@@ -13,8 +13,8 @@ let _listCache = null;
 export function invalidateClientListCache() { _listCache = null; }
 
 export async function renderClientList() {
-  setHeaderTitle('Clients');
-  setHeaderActions('<a href="#/client/new" class="btn btn-primary btn-sm">+ New Client</a>');
+  setHeaderTitle('Companies');
+  setHeaderActions('<a href="#/client/new" class="btn btn-primary btn-sm">+ New Company</a>');
   const content = document.getElementById('content');
 
   let clients;
@@ -30,9 +30,9 @@ export async function renderClientList() {
   if (clients.length === 0) {
     content.innerHTML = `
       <div class="empty-state">
-        <h2>No clients yet</h2>
-        <p>Add your first client company to start linking jobs.</p>
-        <a href="#/client/new" class="btn btn-primary">Add Client</a>
+        <h2>No companies yet</h2>
+        <p>Add your first company to start linking jobs.</p>
+        <a href="#/client/new" class="btn btn-primary">Add Company</a>
       </div>`;
     return;
   }
@@ -42,7 +42,7 @@ export async function renderClientList() {
 
   const searchBar = `
     <div class="search-bar">
-      <input type="text" id="client-search" class="form-input" placeholder="Search clients…">
+      <input type="text" id="client-search" class="form-input" placeholder="Search companies…">
     </div>`;
 
   content.innerHTML = searchBar + `<div id="client-list-container" class="candidate-list"></div>`;
@@ -51,7 +51,7 @@ export async function renderClientList() {
 
   function renderRows(list) {
     if (list.length === 0) {
-      listContainer.innerHTML = `<div class="empty-state"><p>No clients match your search.</p></div>`;
+      listContainer.innerHTML = `<div class="empty-state"><p>No companies match your search.</p></div>`;
       return;
     }
     listContainer.innerHTML = list.map(c => {
@@ -88,14 +88,14 @@ export async function renderClientList() {
 // ── Detail View ────────────────────────────────────────────
 
 export async function renderClientDetail(id) {
-  setHeaderTitle('Client');
+  setHeaderTitle('Company');
   const content = document.getElementById('content');
 
   let client, jobs;
   try {
     client = await db.getClient(id);
     if (!client) {
-      content.innerHTML = `<div class="empty-state"><p>Client not found.</p></div>`;
+      content.innerHTML = `<div class="empty-state"><p>Company not found.</p></div>`;
       return;
     }
     jobs = await db.getJobsByClient(id);
@@ -164,6 +164,7 @@ export async function renderClientDetail(id) {
   // Delete handler
   document.getElementById('btn-delete-client').addEventListener('click', async () => {
     if (!await confirm(`Delete "${client.companyName}" and unlink all associated jobs?`)) return;
+
     try {
       // Unlink jobs (set clientId to empty)
       for (const j of jobs) {
@@ -173,7 +174,7 @@ export async function renderClientDetail(id) {
       await db.deleteClient(id);
       _listCache = null;
       invalidateJobListCache();
-      toast('Client deleted', { type: 'info' });
+      toast('Company deleted', { type: 'info' });
       location.hash = '#/clients';
     } catch (err) {
       toast('Failed to delete: ' + err.message, { type: 'error' });
@@ -201,7 +202,7 @@ export async function renderClientForm(id) {
     }
   }
 
-  setHeaderTitle(isEdit ? `Edit ${client.companyName}` : 'New Client');
+  setHeaderTitle(isEdit ? `Edit ${client.companyName}` : 'New Company');
   setHeaderActions('');
 
   const contacts = client ? (client.contacts || []) : [];
@@ -236,7 +237,7 @@ export async function renderClientForm(id) {
       </div>
 
       <div class="form-actions">
-        <button type="submit" class="btn btn-primary">${isEdit ? 'Save Changes' : 'Create Client'}</button>
+        <button type="submit" class="btn btn-primary">${isEdit ? 'Save Changes' : 'Create Company'}</button>
         <a href="${isEdit ? `#/client/${id}` : '#/clients'}" class="btn btn-secondary">Cancel</a>
       </div>
     </form>
@@ -323,11 +324,11 @@ export async function renderClientForm(id) {
       if (isEdit) {
         Object.assign(client, data);
         await db.updateClient(client);
-        toast('Client updated', { type: 'success' });
+        toast('Company updated', { type: 'success' });
       } else {
         const newClient = await db.addClient(data);
         id = newClient.id;
-        toast('Client created', { type: 'success' });
+        toast('Company created', { type: 'success' });
       }
       _listCache = null;
       clearDirty();

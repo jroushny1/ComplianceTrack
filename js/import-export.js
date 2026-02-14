@@ -3,7 +3,7 @@
  * 4-step workflow: Upload+Map → Preview+Validate → Execute → Verify
  */
 
-import db, { DB_VERSION, validateClient, validateJob, validatePipelineEntry } from './db.js';
+import db, { DB_VERSION, validateClient, validateJob, validatePipelineEntry, validateActivity } from './db.js';
 import { setHeaderTitle, toast, openModal, closeModal, escapeHtml } from './ui.js';
 import { invalidateListCache } from './candidates.js';
 import { invalidateClientListCache } from './clients.js';
@@ -86,7 +86,7 @@ export async function renderImportExport() {
   content.innerHTML = `
     <div class="import-page">
       <div class="import-step">
-        <h3>Import Candidates from CSV</h3>
+        <h3>Import People from CSV</h3>
         <p class="section-desc">Upload a CSV file from Loxo or any other source. You'll map columns before importing.</p>
         <div id="drop-zone" class="drop-zone">
           <p><strong>Drop CSV file here</strong> or click to browse</p>
@@ -100,7 +100,7 @@ export async function renderImportExport() {
         <h3>Export</h3>
         <p class="section-desc">Download a full backup of all your data as JSON.</p>
         <button id="btn-export-json" class="btn btn-primary">Export Full Backup (JSON)</button>
-        <button id="btn-export-csv" class="btn btn-secondary" style="margin-left: 8px;">Export Candidates (CSV)</button>
+        <button id="btn-export-csv" class="btn btn-secondary" style="margin-left: 8px;">Export People (CSV)</button>
       </div>
 
       <div class="import-step">
@@ -197,7 +197,7 @@ function renderMappingStep() {
   workflow.innerHTML = `
     <div class="import-step">
       <h3>Step 1: Map Columns</h3>
-      <p class="section-desc">Map CSV columns to candidate fields. Auto-suggested mappings are pre-filled.</p>
+      <p class="section-desc">Map CSV columns to person fields. Auto-suggested mappings are pre-filled.</p>
       <div class="mapping-grid">
         ${importState.headers.map(header => `
           <div class="form-group" style="margin:0">
@@ -354,7 +354,7 @@ async function renderPreviewStep() {
       </div>
 
       <div style="margin-top: 16px;">
-        <button id="btn-execute-import" class="btn btn-primary">Import ${newCount} Candidates</button>
+        <button id="btn-execute-import" class="btn btn-primary">Import ${newCount} People</button>
         <button id="btn-back-mapping" class="btn btn-secondary" style="margin-left: 8px;">Back</button>
       </div>
     </div>
@@ -505,7 +505,7 @@ function renderVerifyStep(created, updated, skipped, errors) {
         ${errors > 0 ? `<span style="color: var(--cert-expired)">${errors} errors</span>` : '0 errors'}
       </div>
       <div style="margin-top: 16px;">
-        <a href="#/candidates" class="btn btn-primary">View Candidates</a>
+        <a href="#/candidates" class="btn btn-primary">View People</a>
         <button id="btn-import-another" class="btn btn-secondary" style="margin-left: 8px;">Import Another File</button>
       </div>
     </div>
@@ -559,13 +559,13 @@ async function handleJsonRestore(file) {
     for (let i = 0; i < data.candidates.length; i++) {
       const c = data.candidates[i];
       if (!c.id || !c.firstName || !c.lastName) {
-        toast(`Invalid candidate at row ${i + 1}: missing id, firstName, or lastName`, { type: 'error' });
+        toast(`Invalid person at row ${i + 1}: missing id, firstName, or lastName`, { type: 'error' });
         return;
       }
     }
 
     const count = data.candidates.length;
-    if (!window.confirm(`This will import ${count} candidates from backup. Existing data will NOT be overwritten (matched by ID). Continue?`)) return;
+    if (!window.confirm(`This will import ${count} people from backup. Existing data will NOT be overwritten (matched by ID). Continue?`)) return;
 
     // Auto-backup current data first
     await handleBackup(true);
@@ -630,8 +630,23 @@ async function handleJsonRestore(file) {
       }
     }
 
+    // Restore activities
+    let activitiesImported = 0;
+    if (data.activities && Array.isArray(data.activities)) {
+      const existingActivities = new Set((await db.getAllActivities()).map(a => a.id));
+      const toImportActivities = [];
+      for (const a of data.activities) {
+        if (!a.id || existingActivities.has(a.id)) continue;
+        try { validateActivity(a); toImportActivities.push(a); } catch { /* skip invalid */ }
+      }
+      if (toImportActivities.length > 0) {
+        await db.batchPut('activities', toImportActivities);
+        activitiesImported = toImportActivities.length;
+      }
+    }
+
     // Restore settings (whitelist known keys only)
-    const SETTINGS_WHITELIST = new Set(['certAlertDays', 'customCertTypes']);
+    const SETTINGS_WHITELIST = new Set(['certAlertDays', 'customCertTypes', 'emailTemplates']);
     if (data.settings && Array.isArray(data.settings)) {
       for (const s of data.settings) {
         if (s.key && SETTINGS_WHITELIST.has(s.key) && s.value !== undefined) {
@@ -644,11 +659,12 @@ async function handleJsonRestore(file) {
     invalidateClientListCache();
     invalidateJobListCache();
 
-    const parts = [`${toImport.length} candidates`];
+    const parts = [`${toImport.length} people`];
     if (clientsImported > 0) parts.push(`${clientsImported} clients`);
     if (jobsImported > 0) parts.push(`${jobsImported} jobs`);
     if (pipelineImported > 0) parts.push(`${pipelineImported} pipeline entries`);
-    toast(`Restored ${parts.join(', ')}${skipped > 0 ? ` (${skipped} candidates already existed)` : ''}`, { type: 'success' });
+    if (activitiesImported > 0) parts.push(`${activitiesImported} activities`);
+    toast(`Restored ${parts.join(', ')}${skipped > 0 ? ` (${skipped} people already existed)` : ''}`, { type: 'success' });
     renderImportExport();
   } catch (err) {
     toast(`Failed to restore: ${err.message}`, { type: 'error' });
@@ -663,7 +679,7 @@ async function handleCsvExport() {
 
     const candidates = await db.getAllCandidates();
     if (candidates.length === 0) {
-      toast('No candidates to export', { type: 'info' });
+      toast('No people to export', { type: 'info' });
       return;
     }
 
@@ -700,7 +716,7 @@ async function handleCsvExport() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `compliancetrack-candidates-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `compliancetrack-people-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast('CSV exported', { type: 'success' });

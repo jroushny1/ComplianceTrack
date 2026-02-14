@@ -1,10 +1,10 @@
 /**
  * db.js — IndexedDB setup, stores, CRUD helpers
- * ComplianceTrack v2 (Phase 1: candidates + settings, Phase 2: jobs, clients, pipeline)
+ * ComplianceTrack v3 (Phase 1: candidates + settings, Phase 2: jobs/clients/pipeline, Phase 3: activities)
  */
 
 const DB_NAME = 'ComplianceTrackDB';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 class ComplianceDB {
   constructor() {
@@ -52,7 +52,14 @@ class ComplianceDB {
           pipeline.createIndex('candidateId', 'candidateId');
           pipeline.createIndex('candidateJob', ['candidateId', 'jobId'], { unique: true });
         }
-        // Phase 3: if (oldVersion < 3) { ... activities }
+        if (oldVersion < 3) {
+          // Phase 3 store
+          const activities = db.createObjectStore('activities', { keyPath: 'id' });
+          activities.createIndex('candidateId', 'candidateId');
+          activities.createIndex('type', 'type');
+          activities.createIndex('followUpDate', 'followUpDate');
+          activities.createIndex('candidateType', ['candidateId', 'type']);
+        }
       };
     });
   }
@@ -396,6 +403,74 @@ class ComplianceDB {
     });
   }
 
+  // ── Activity Helpers ─────────────────────────────────────
+
+  static ACTIVITY_TYPES = ['email', 'call', 'interview', 'note', 'submission'];
+
+  createActivity(data = {}) {
+    return {
+      id: crypto.randomUUID(),
+      type: data.type || 'note',
+      candidateId: data.candidateId || '',
+      jobId: data.jobId || '',
+      subject: data.subject || '',
+      body: data.body || '',
+      templateUsed: data.templateUsed || null,
+      status: data.status || null,
+      followUpDate: data.followUpDate || null,
+      createdAt: data.createdAt || new Date().toISOString(),
+    };
+  }
+
+  async addActivity(data) {
+    const activity = this.createActivity(data);
+    validateActivity(activity);
+    await this.add('activities', activity);
+    return activity;
+  }
+
+  async updateActivity(activity) {
+    validateActivity(activity);
+    await this.put('activities', activity);
+    return activity;
+  }
+
+  async deleteActivity(id) { await this.delete('activities', id); }
+  async getActivity(id) { return this.get('activities', id); }
+  async getAllActivities() { return this.getAll('activities'); }
+
+  async getActivitiesByCandidate(candidateId) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('activities', 'readonly');
+      const index = tx.objectStore('activities').index('candidateId');
+      const request = index.getAll(candidateId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getActivitiesWithFollowUp() {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('activities', 'readonly');
+      const index = tx.objectStore('activities').index('followUpDate');
+      const range = IDBKeyRange.bound('', '9999-12-31');
+      const request = index.getAll(range);
+      request.onsuccess = () => resolve(request.result.filter(a => a.followUpDate));
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async deleteActivitiesByCandidate(candidateId) {
+    const entries = await this.getActivitiesByCandidate(candidateId);
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('activities', 'readwrite');
+      const store = tx.objectStore('activities');
+      for (const e of entries) store.delete(e.id);
+      tx.oncomplete = () => resolve(entries.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   // ── Settings Helpers ──────────────────────────────────────
 
   async getSetting(key) {
@@ -410,11 +485,12 @@ class ComplianceDB {
   // ── Export / Import ───────────────────────────────────────
 
   async exportAll() {
-    const [candidates, clients, jobs, pipeline, settings] = await Promise.all([
+    const [candidates, clients, jobs, pipeline, activities, settings] = await Promise.all([
       this.getAll('candidates'),
       this.getAll('clients'),
       this.getAll('jobs'),
       this.getAll('pipeline'),
+      this.getAll('activities'),
       this.getAll('settings'),
     ]);
     return {
@@ -424,6 +500,7 @@ class ComplianceDB {
       clients,
       jobs,
       pipeline,
+      activities,
       settings,
     };
   }
@@ -468,6 +545,16 @@ export function validateJob(data) {
   }
   if (data.stages && !Array.isArray(data.stages)) {
     throw new Error('stages must be an array');
+  }
+}
+
+export function validateActivity(data) {
+  const validTypes = ['email', 'call', 'interview', 'note', 'submission'];
+  if (!data.type || !validTypes.includes(data.type)) {
+    throw new Error('Activity type must be one of: ' + validTypes.join(', '));
+  }
+  if (!data.candidateId) {
+    throw new Error('Missing required field: candidateId');
   }
 }
 

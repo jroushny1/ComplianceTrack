@@ -4,12 +4,14 @@
  */
 
 import db from './db.js';
-import { initModalListeners, setHeaderTitle, setHeaderActions, toast, escapeHtml, formatDate, isDirty, clearDirty } from './ui.js';
+import { initModalListeners, closeModal, setHeaderTitle, setHeaderActions, toast, escapeHtml, formatDate, isDirty, clearDirty } from './ui.js';
 import { renderCandidateList, renderCandidateDetail, renderCandidateForm } from './candidates.js';
 import { renderClientList, renderClientDetail, renderClientForm } from './clients.js';
 import { renderJobList, renderJobDetail, renderJobForm } from './jobs.js';
 import { renderPipeline } from './pipeline.js';
 import { renderImportExport, handleBackup } from './import-export.js';
+import { renderOutreach, renderTemplateSettings } from './outreach.js';
+import { getFollowUpAlerts, renderFollowUpAlerts } from './alerts.js';
 
 // ── Router ──────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ const routes = {
   'job-new': () => renderJobForm(null),
   'job-edit': (id) => renderJobForm(id),
   pipeline: renderPipeline,
+  outreach: renderOutreach,
   import: renderImportExport,
   settings: renderSettings,
 };
@@ -88,49 +91,64 @@ async function renderDashboard() {
   setHeaderTitle('Dashboard');
   const content = document.getElementById('content');
 
-  let candidates, jobs, clients, alertDays;
-  try {
-    [candidates, jobs, clients, alertDays] = await Promise.all([
-      db.getAllCandidates(),
-      db.getAllJobs(),
-      db.getAllClients(),
-      db.getSetting('certAlertDays'),
-    ]);
-    alertDays = alertDays || 60;
-  } catch (err) {
+  // Show skeleton loading state
+  content.innerHTML = `
+    <div class="dashboard">
+      <div class="metrics-row">
+        ${Array(3).fill('<div class="metric-card skeleton"><div class="skeleton-line skeleton-lg"></div><div class="skeleton-line skeleton-sm"></div></div>').join('')}
+      </div>
+      <div class="dashboard-section"><div class="skeleton-line skeleton-lg"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+    </div>`;
+
+  // Fetch all data in parallel — use allSettled so partial failures don't block everything
+  const results = await Promise.allSettled([
+    db.getAllCandidates(),
+    db.getAllJobs(),
+    db.getAllClients(),
+    db.getAllActivities(),
+    getFollowUpAlerts(),
+    db.getAll('pipeline'),
+  ]);
+
+  const [candidatesR, jobsR, clientsR, activitiesR, followUpsR, pipelineR] = results;
+
+  if (candidatesR.status === 'rejected') {
     content.innerHTML = `<div class="empty-state"><p>Failed to load dashboard data.</p></div>`;
-    toast('Database error: ' + err.message, { type: 'error' });
+    toast('Database error', { type: 'error' });
     return;
   }
 
+  const candidates = candidatesR.value;
+  const jobs = jobsR.status === 'fulfilled' ? jobsR.value : [];
+  const clients = clientsR.status === 'fulfilled' ? clientsR.value : [];
+  const activities = activitiesR.status === 'fulfilled' ? activitiesR.value : [];
+  const followUps = followUpsR.status === 'fulfilled' ? followUpsR.value : { overdue: [], upcoming: [] };
+  const pipelineEntries = pipelineR.status === 'fulfilled' ? pipelineR.value : [];
   const openJobs = jobs.filter(j => j.status === 'open');
 
-  // Compute cert stats
-  let totalCerts = 0;
-  let expiringSoon = [];
-  let expired = [];
-
-  for (const c of candidates) {
-    for (const cert of (c.certifications || [])) {
-      totalCerts++;
-      if (!cert.expirationDate) continue;
-      const days = Math.ceil((new Date(cert.expirationDate) - new Date()) / 86400000);
-      if (days < 0) {
-        expired.push({ ...cert, candidateName: `${c.firstName} ${c.lastName}`, candidateId: c.id });
-      } else if (days <= alertDays) {
-        expiringSoon.push({ ...cert, candidateName: `${c.firstName} ${c.lastName}`, candidateId: c.id, daysRemaining: days });
-      }
+  // Pipeline summary per job
+  const pipelineSummary = [];
+  for (const j of openJobs) {
+    const entries = pipelineEntries.filter(p => p.jobId === j.id);
+    if (entries.length === 0) continue;
+    const stageCounts = {};
+    for (const e of entries) {
+      stageCounts[e.stage] = (stageCounts[e.stage] || 0) + 1;
     }
+    pipelineSummary.push({ job: j, total: entries.length, stageCounts });
   }
 
-  expiringSoon.sort((a, b) => a.daysRemaining - b.daysRemaining);
+  // Recent activities (last 10)
+  const recentActivities = activities.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 10);
+  const candidateMap = new Map(candidates.map(c => [c.id, c]));
 
+  // Single-frame render
   content.innerHTML = `
     <div class="dashboard">
       <div class="metrics-row">
         <div class="metric-card">
           <div class="metric-value">${candidates.length}</div>
-          <div class="metric-label">Candidates</div>
+          <div class="metric-label">People</div>
         </div>
         <div class="metric-card">
           <div class="metric-value">${openJobs.length}</div>
@@ -138,39 +156,31 @@ async function renderDashboard() {
         </div>
         <div class="metric-card">
           <div class="metric-value">${clients.length}</div>
-          <div class="metric-label">Clients</div>
-        </div>
-        <div class="metric-card metric-card--warning">
-          <div class="metric-value">${expiringSoon.length}</div>
-          <div class="metric-label">Expiring Soon</div>
-        </div>
-        <div class="metric-card metric-card--danger">
-          <div class="metric-value">${expired.length}</div>
-          <div class="metric-label">Expired</div>
+          <div class="metric-label">Companies</div>
         </div>
       </div>
 
-      ${expiringSoon.length > 0 || expired.length > 0 ? `
+      ${followUps.overdue.length > 0 || followUps.upcoming.length > 0 ? `
       <div class="dashboard-section">
-        <h2 class="section-title">Certification Alerts</h2>
-        <div class="cert-alerts">
-          ${expired.map(cert => `
-            <div class="cert-alert cert-alert--expired">
-              <div class="cert-alert-badge">EXPIRED</div>
-              <div class="cert-alert-info">
-                <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
-                <div class="cert-alert-date">Expired ${formatDate(cert.expirationDate)}</div>
+        <h2 class="section-title">Follow-up Reminders</h2>
+        ${renderFollowUpAlerts(followUps)}
+      </div>
+      ` : ''}
+
+      ${pipelineSummary.length > 0 ? `
+      <div class="dashboard-section">
+        <h2 class="section-title">Pipeline Summary</h2>
+        <div class="pipeline-summary">
+          ${pipelineSummary.map(ps => `
+            <a href="#/pipeline/${ps.job.id}" class="pipeline-summary-card">
+              <div class="pipeline-summary-title">${escapeHtml(ps.job.title)}</div>
+              <div class="pipeline-summary-total">${ps.total} candidate${ps.total !== 1 ? 's' : ''}</div>
+              <div class="pipeline-summary-stages">
+                ${Object.entries(ps.stageCounts).map(([stage, count]) =>
+                  `<span class="pipeline-stage-chip">${escapeHtml(stage)} <strong>${count}</strong></span>`
+                ).join('')}
               </div>
-            </div>
-          `).join('')}
-          ${expiringSoon.map(cert => `
-            <div class="cert-alert cert-alert--expiring">
-              <div class="cert-alert-badge">${cert.daysRemaining}d</div>
-              <div class="cert-alert-info">
-                <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
-                <div class="cert-alert-date">Expires ${formatDate(cert.expirationDate)}</div>
-              </div>
-            </div>
+            </a>
           `).join('')}
         </div>
       </div>
@@ -193,19 +203,43 @@ async function renderDashboard() {
       </div>
       ` : ''}
 
+      ${recentActivities.length > 0 ? `
+      <div class="dashboard-section">
+        <h2 class="section-title">Recent Activity</h2>
+        <div class="candidate-list compact">
+          ${recentActivities.map(a => {
+            const cand = candidateMap.get(a.candidateId);
+            const typeLabels = { email: 'Email', call: 'Call', interview: 'Interview', note: 'Note', submission: 'Submission' };
+            return `
+            <div class="candidate-row">
+              <div class="candidate-name">
+                <span class="activity-type-badge activity-type--${a.type}">${typeLabels[a.type] || a.type}</span>
+                ${escapeHtml(a.subject || a.type)}
+              </div>
+              <div class="candidate-meta">
+                ${cand ? `<a href="#/candidate/${cand.id}" class="link">${escapeHtml(cand.firstName)} ${escapeHtml(cand.lastName)}</a>` : ''}
+                — ${formatDate(a.createdAt)}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+        <a href="#/outreach" class="btn btn-secondary btn-block">View All Activity</a>
+      </div>
+      ` : ''}
+
       ${candidates.length === 0 && jobs.length === 0 ? `
       <div class="empty-state">
         <h2>Welcome to ComplianceTrack</h2>
-        <p>Get started by adding your first candidate, client, or importing data from Loxo.</p>
+        <p>Get started by adding your first person, company, or importing data from Loxo.</p>
         <div class="empty-actions">
-          <a href="#/candidate/new" class="btn btn-primary">Add Candidate</a>
-          <a href="#/client/new" class="btn btn-secondary">Add Client</a>
+          <a href="#/candidate/new" class="btn btn-primary">Add Person</a>
+          <a href="#/client/new" class="btn btn-secondary">Add Company</a>
           <a href="#/import" class="btn btn-secondary">Import Data</a>
         </div>
       </div>
       ` : `
       <div class="dashboard-section">
-        <h2 class="section-title">Recent Candidates</h2>
+        <h2 class="section-title">Recent People</h2>
         <div class="candidate-list compact">
           ${candidates.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5).map(c => `
             <a href="#/candidate/${c.id}" class="candidate-row">
@@ -218,7 +252,7 @@ async function renderDashboard() {
             </a>
           `).join('')}
         </div>
-        <a href="#/candidates" class="btn btn-secondary btn-block">View All Candidates</a>
+        <a href="#/candidates" class="btn btn-secondary btn-block">View All People</a>
       </div>
       `}
     </div>
@@ -267,12 +301,33 @@ async function renderSettings() {
       </div>
 
       <div class="settings-section">
+        <h2 class="section-title">Email Templates</h2>
+        <p class="section-desc">Create reusable templates for outreach emails. Use placeholders like {{firstName}}, {{lastName}}, {{jobTitle}}.</p>
+        <div id="template-settings-container"></div>
+      </div>
+
+      <div class="settings-section">
+        <h2 class="section-title">Keyboard Shortcuts</h2>
+        <div class="shortcut-list">
+          <div class="shortcut-row"><kbd>N</kbd> <span>Quick-add (new person, job, or company depending on current view)</span></div>
+          <div class="shortcut-row"><kbd>/</kbd> <span>Focus search box</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd> <span>Close modal or clear search</span></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h2 class="section-title">Data</h2>
         <button id="btn-export-all" class="btn btn-secondary">Export Full Backup (JSON)</button>
         <button id="btn-clear-all" class="btn btn-danger" style="margin-left: 8px;">Clear All Data</button>
       </div>
     </div>
   `;
+
+  // Render email template settings
+  const templateContainer = document.getElementById('template-settings-container');
+  if (templateContainer) {
+    await renderTemplateSettings(templateContainer);
+  }
 
   // Settings form
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
@@ -334,6 +389,7 @@ async function renderSettings() {
         db.clear('clients'),
         db.clear('jobs'),
         db.clear('pipeline'),
+        db.clear('activities'),
         db.clear('settings'),
       ]);
       toast('All data cleared', { type: 'info' });
@@ -404,6 +460,39 @@ async function init() {
   });
 
   handleRoute();
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Skip when typing in inputs/textareas
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
+      if (e.key === 'Escape') {
+        e.target.blur();
+      }
+      return;
+    }
+
+    if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault();
+      const hash = location.hash.slice(1) || '/dashboard';
+      if (hash.startsWith('/clients') || hash.startsWith('/client')) {
+        location.hash = '#/client-new';
+      } else if (hash.startsWith('/jobs') || hash.startsWith('/job')) {
+        location.hash = '#/job-new';
+      } else {
+        location.hash = '#/candidate-new';
+      }
+    } else if (e.key === '/') {
+      e.preventDefault();
+      const searchInput = document.querySelector('.search-input');
+      if (searchInput) searchInput.focus();
+    } else if (e.key === 'Escape') {
+      const overlay = document.getElementById('modal-overlay');
+      if (overlay && !overlay.hidden) {
+        closeModal();
+      }
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

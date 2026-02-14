@@ -169,7 +169,7 @@ export async function renderJobDetail(id) {
         <h2 class="section-title">Job Info</h2>
         <div class="detail-grid">
           ${detailField('Title', job.title)}
-          ${detailField('Client', client ? client.companyName : '—', client ? `#/client/${client.id}` : null)}
+          ${detailField('Company', client ? client.companyName : '—', client ? `#/client/${client.id}` : null)}
           ${detailField('Status', job.status)}
           ${detailField('Location', (job.location || '') + (job.remote ? ' (Remote)' : ''))}
           ${detailField('Compensation', compDisplay)}
@@ -370,9 +370,9 @@ export async function renderJobForm(id) {
             <input type="text" id="title" name="title" class="form-input" required value="${isEdit ? escapeHtml(job.title) : ''}">
           </div>
           <div class="form-group">
-            <label for="clientId">Client</label>
+            <label for="clientId">Company</label>
             <select id="clientId" name="clientId" class="form-input">
-              <option value="">— No Client —</option>
+              <option value="">— No Company —</option>
               ${clientOptions}
             </select>
           </div>

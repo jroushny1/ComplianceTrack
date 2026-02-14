@@ -4,6 +4,7 @@
 
 import db, { getCertStatus, getCertUrgency, getCertDaysRemaining, FINRA_LICENSES, COMPLIANCE_CERTS } from './db.js';
 import { openModal, closeModal, confirm, toast, SearchController, setHeaderTitle, setHeaderActions, formatDate, escapeHtml, markDirty, clearDirty, detailField } from './ui.js';
+import { renderActivityTimeline, openActivityModal } from './outreach.js';
 
 // ── State ───────────────────────────────────────────────────
 
@@ -23,8 +24,8 @@ let _listCache = null;
 export function invalidateListCache() { _listCache = null; }
 
 export async function renderCandidateList() {
-  setHeaderTitle('Candidates');
-  setHeaderActions(`<a href="#/candidate/new" class="btn btn-primary btn-sm">+ Add Candidate</a>`);
+  setHeaderTitle('People');
+  setHeaderActions(`<a href="#/candidate/new" class="btn btn-primary btn-sm">+ Add Person</a>`);
   const content = document.getElementById('content');
 
   let candidates;
@@ -41,7 +42,7 @@ export async function renderCandidateList() {
     <div class="candidates-page">
       <div class="list-toolbar">
         <div class="search-group">
-          <input type="search" id="candidate-search" class="form-input search-input" placeholder="Search candidates...">
+          <input type="search" id="candidate-search" class="form-input search-input" placeholder="Search people...">
         </div>
         <div class="filter-group">
           <select id="filter-cert" class="form-select">
@@ -141,8 +142,8 @@ function renderResults(results, query) {
   if (results.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
-        <p>${query ? `No candidates matching "${escapeHtml(query)}"` : 'No candidates yet'}</p>
-        ${!query ? '<a href="#/candidate/new" class="btn btn-primary">Add First Candidate</a>' : ''}
+        <p>${query ? `No people matching "${escapeHtml(query)}"` : 'No people yet'}</p>
+        ${!query ? '<a href="#/candidate/new" class="btn btn-primary">Add First Person</a>' : ''}
       </div>
     `;
     return;
@@ -240,7 +241,7 @@ export async function renderCandidateDetail(id) {
   }
 
   if (!candidate) {
-    content.innerHTML = `<div class="empty-state"><p>Candidate not found.</p><a href="#/candidates" class="btn btn-secondary">Back to List</a></div>`;
+    content.innerHTML = `<div class="empty-state"><p>Person not found.</p><a href="#/candidates" class="btn btn-secondary">Back to List</a></div>`;
     return;
   }
 
@@ -290,6 +291,14 @@ export async function renderCandidateDetail(id) {
             <div class="notes-content">${escapeHtml(candidate.notes)}</div>
           </div>
           ` : ''}
+
+          <div class="detail-section">
+            <div class="section-title-row">
+              <h3 class="section-title">Activity</h3>
+              <button id="btn-log-activity" class="btn btn-sm btn-secondary">+ Log</button>
+            </div>
+            <div id="activity-timeline-container"></div>
+          </div>
         </div>
 
         <div class="detail-sidebar">
@@ -320,6 +329,7 @@ export async function renderCandidateDetail(id) {
     try {
       const snapshot = { ...candidate, certifications: [...(candidate.certifications || [])] };
       await db.deletePipelineByCandidate(id);
+      await db.deleteActivitiesByCandidate(id);
       await db.deleteCandidate(id);
       _listCache = null;
       toast(`Deleted ${candidate.firstName} ${candidate.lastName}`, {
@@ -360,6 +370,16 @@ export async function renderCandidateDetail(id) {
       const idx = parseInt(deleteBtn.dataset.index, 10);
       removeCert(candidate, idx);
     }
+  });
+
+  // Activity timeline
+  renderActivityTimeline(id, document.getElementById('activity-timeline-container'));
+
+  // Log activity button
+  document.getElementById('btn-log-activity').addEventListener('click', async () => {
+    await openActivityModal(null, null, { candidateId: id });
+    // Re-render timeline after modal closes
+    setTimeout(() => renderActivityTimeline(id, document.getElementById('activity-timeline-container')), 300);
   });
 }
 
@@ -580,7 +600,7 @@ export async function renderCandidateForm(id) {
     return;
   }
 
-  setHeaderTitle(isEdit ? `Edit: ${candidate.firstName} ${candidate.lastName}` : 'New Candidate');
+  setHeaderTitle(isEdit ? `Edit: ${candidate.firstName} ${candidate.lastName}` : 'New Person');
   setHeaderActions('');
 
   content.innerHTML = `
@@ -664,7 +684,7 @@ export async function renderCandidateForm(id) {
 
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="btn-cancel">Cancel</button>
-        <button type="submit" class="btn btn-primary">${isEdit ? 'Save Changes' : 'Create Candidate'}</button>
+        <button type="submit" class="btn btn-primary">${isEdit ? 'Save Changes' : 'Create Person'}</button>
       </div>
     </form>
   `;
@@ -690,7 +710,7 @@ export async function renderCandidateForm(id) {
     const firstName = form.firstName.value.trim();
     const lastName = form.lastName.value.trim();
     if (!firstName || !lastName) {
-      toast('First and last name are required', { type: 'error' });
+      toast('First and last name required', { type: 'error' });
       return;
     }
 
@@ -716,12 +736,12 @@ export async function renderCandidateForm(id) {
         Object.assign(candidate, data);
         await db.updateCandidate(candidate);
         _listCache = null;
-        toast('Candidate updated', { type: 'success' });
+        toast('Person updated', { type: 'success' });
         location.hash = `#/candidate/${id}`;
       } else {
         const newCandidate = await db.addCandidate(data);
         _listCache = null;
-        toast('Candidate created', { type: 'success' });
+        toast('Person created', { type: 'success' });
         location.hash = `#/candidate/${newCandidate.id}`;
       }
     } catch (err) {

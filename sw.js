@@ -3,7 +3,7 @@
  * Cache-first for JS/CSS/fonts, network-first for HTML
  */
 
-const CACHE_NAME = 'compliancetrack-v3';
+const CACHE_NAME = 'compliancetrack-v4';
 
 const ASSETS = [
   './',
@@ -17,6 +17,8 @@ const ASSETS = [
   './js/clients.js',
   './js/jobs.js',
   './js/pipeline.js',
+  './js/outreach.js',
+  './js/alerts.js',
   './js/import-export.js',
   './js/sw-register.js',
   './lib/papaparse.min.js',
