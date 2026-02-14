@@ -3,7 +3,7 @@
  * 4-step workflow: Upload+Map → Preview+Validate → Execute → Verify
  */
 
-import db from './db.js';
+import db, { DB_VERSION } from './db.js';
 import { setHeaderTitle, toast, openModal, closeModal, escapeHtml } from './ui.js';
 
 // Load PapaParse (non-module script, available as global Papa)
@@ -263,18 +263,25 @@ async function renderPreviewStep() {
     return candidate;
   });
 
-  // Duplicate detection
+  // Duplicate detection (O(n) via Map lookups)
   const existing = await db.getAllCandidates();
+  const extIdMap = new Map();
+  const emailMap = new Map();
+  for (const c of existing) {
+    if (c.externalId) extIdMap.set(c.externalId, c);
+    if (c.email) emailMap.set(c.email.toLowerCase(), c);
+  }
+
   let newCount = 0, updateCount = 0, dupCount = 0;
   const duplicates = [];
 
   for (const row of transformed) {
     let match = null;
     if (row.externalId) {
-      match = existing.find(c => c.externalId === row.externalId);
+      match = extIdMap.get(row.externalId) || null;
     }
     if (!match && row.email) {
-      match = existing.find(c => c.email && c.email.toLowerCase() === row.email.toLowerCase());
+      match = emailMap.get(row.email.toLowerCase()) || null;
     }
     if (match) {
       row._existingId = match.id;
@@ -404,6 +411,7 @@ async function executeImport() {
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
+    const toCreate = [];
 
     for (const row of batch) {
       try {
@@ -414,7 +422,6 @@ async function executeImport() {
         if (row._existingId && row._dupAction === 'update') {
           const existing = await db.getCandidate(row._existingId);
           if (existing) {
-            // Merge: update non-empty fields
             for (const [key, value] of Object.entries(row)) {
               if (key.startsWith('_')) continue;
               if (value && value !== '' && (!Array.isArray(value) || value.length > 0)) {
@@ -427,15 +434,24 @@ async function executeImport() {
           }
         }
 
-        // Create new
+        // Collect new candidates for batch write
         const data = {};
         for (const [key, value] of Object.entries(row)) {
           if (!key.startsWith('_')) data[key] = value;
         }
-        await db.addCandidate(data);
-        created++;
+        toCreate.push(db.createCandidate(data));
       } catch (err) {
         errors++;
+      }
+    }
+
+    // Batch write all new candidates in a single transaction
+    if (toCreate.length > 0) {
+      try {
+        await db.addCandidatesBatch(toCreate);
+        created += toCreate.length;
+      } catch (err) {
+        errors += toCreate.length;
       }
     }
 
@@ -486,16 +502,20 @@ function renderVerifyStep(created, updated, skipped, errors) {
 // ── JSON Backup / Restore ───────────────────────────────────
 
 export async function handleBackup(silent = false) {
-  const data = await db.exportAll();
-  const json = JSON.stringify(data, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `compliancetrack-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  if (!silent) toast('Backup downloaded', { type: 'success' });
+  try {
+    const data = await db.exportAll();
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `compliancetrack-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    if (!silent) toast('Backup downloaded', { type: 'success' });
+  } catch (err) {
+    toast('Backup failed: ' + err.message, { type: 'error' });
+  }
 }
 
 async function handleJsonRestore(file) {
@@ -503,9 +523,25 @@ async function handleJsonRestore(file) {
     const text = await file.text();
     const data = JSON.parse(text);
 
+    // Shape validation
     if (!data.candidates || !Array.isArray(data.candidates)) {
       toast('Invalid backup file: missing candidates array', { type: 'error' });
       return;
+    }
+
+    // Version check
+    if (data.version && data.version > DB_VERSION) {
+      toast(`Backup is from a newer version (v${data.version}). Update ComplianceTrack before restoring.`, { type: 'error' });
+      return;
+    }
+
+    // Validate each candidate has required shape
+    for (let i = 0; i < data.candidates.length; i++) {
+      const c = data.candidates[i];
+      if (!c.id || !c.firstName || !c.lastName) {
+        toast(`Invalid candidate at row ${i + 1}: missing id, firstName, or lastName`, { type: 'error' });
+        return;
+      }
     }
 
     const count = data.candidates.length;
@@ -514,25 +550,32 @@ async function handleJsonRestore(file) {
     // Auto-backup current data first
     await handleBackup(true);
 
-    let imported = 0, skipped = 0;
+    // Batch import — collect new candidates, then write in one transaction
+    const toImport = [];
+    let skipped = 0;
     for (const c of data.candidates) {
       const existing = await db.getCandidate(c.id);
       if (existing) {
         skipped++;
-        continue;
+      } else {
+        toImport.push(c);
       }
-      await db.put('candidates', c);
-      imported++;
+    }
+
+    if (toImport.length > 0) {
+      await db.addCandidatesBatch(toImport);
     }
 
     // Restore settings
     if (data.settings && Array.isArray(data.settings)) {
       for (const s of data.settings) {
-        await db.put('settings', s);
+        if (s.key && s.value !== undefined) {
+          await db.put('settings', s);
+        }
       }
     }
 
-    toast(`Restored ${imported} candidates (${skipped} already existed)`, { type: 'success' });
+    toast(`Restored ${toImport.length} candidates (${skipped} already existed)`, { type: 'success' });
     renderImportExport();
   } catch (err) {
     toast(`Failed to restore: ${err.message}`, { type: 'error' });
@@ -542,49 +585,53 @@ async function handleJsonRestore(file) {
 // ── CSV Export ───────────────────────────────────────────────
 
 async function handleCsvExport() {
-  await loadPapaParse();
+  try {
+    await loadPapaParse();
 
-  const candidates = await db.getAllCandidates();
-  if (candidates.length === 0) {
-    toast('No candidates to export', { type: 'info' });
-    return;
-  }
-
-  const rows = candidates.map(c => ({
-    'First Name': c.firstName,
-    'Last Name': c.lastName,
-    'Email': c.email,
-    'Phone': c.phone,
-    'Title': c.currentTitle,
-    'Employer': c.currentEmployer,
-    'Location': c.location,
-    'Skills': (c.skills || []).join(', '),
-    'Salary Min': c.salaryMin || '',
-    'Salary Max': c.salaryMax || '',
-    'Certifications': (c.certifications || []).map(cert => cert.name).join(', '),
-    'Notes': c.notes,
-    'Source': c.source,
-    'External ID': c.externalId || '',
-    'Created': c.createdAt,
-    'Updated': c.updatedAt,
-  }));
-
-  // Sanitize for formula injection
-  const sanitized = rows.map(row => {
-    const clean = {};
-    for (const [key, val] of Object.entries(row)) {
-      clean[key] = sanitizeCsvValue(String(val));
+    const candidates = await db.getAllCandidates();
+    if (candidates.length === 0) {
+      toast('No candidates to export', { type: 'info' });
+      return;
     }
-    return clean;
-  });
 
-  const csv = Papa.unparse(sanitized);
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `compliancetrack-candidates-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast('CSV exported', { type: 'success' });
+    const rows = candidates.map(c => ({
+      'First Name': c.firstName,
+      'Last Name': c.lastName,
+      'Email': c.email,
+      'Phone': c.phone,
+      'Title': c.currentTitle,
+      'Employer': c.currentEmployer,
+      'Location': c.location,
+      'Skills': (c.skills || []).join(', '),
+      'Salary Min': c.salaryMin || '',
+      'Salary Max': c.salaryMax || '',
+      'Certifications': (c.certifications || []).map(cert => cert.name).join(', '),
+      'Notes': c.notes,
+      'Source': c.source,
+      'External ID': c.externalId || '',
+      'Created': c.createdAt,
+      'Updated': c.updatedAt,
+    }));
+
+    // Sanitize for formula injection
+    const sanitized = rows.map(row => {
+      const clean = {};
+      for (const [key, val] of Object.entries(row)) {
+        clean[key] = sanitizeCsvValue(String(val));
+      }
+      return clean;
+    });
+
+    const csv = Papa.unparse(sanitized);
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `compliancetrack-candidates-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('CSV exported', { type: 'success' });
+  } catch (err) {
+    toast('CSV export failed: ' + err.message, { type: 'error' });
+  }
 }

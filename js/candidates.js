@@ -3,8 +3,7 @@
  */
 
 import db, { getCertStatus, getCertUrgency, getCertDaysRemaining, FINRA_LICENSES, COMPLIANCE_CERTS } from './db.js';
-import { openModal, closeModal, confirm, toast, SearchController, setHeaderTitle, setHeaderActions, formatDate, escapeHtml } from './ui.js';
-import { markDirty, clearDirty } from './app.js';
+import { openModal, closeModal, confirm, toast, SearchController, setHeaderTitle, setHeaderActions, formatDate, escapeHtml, markDirty, clearDirty } from './ui.js';
 
 // ── State ───────────────────────────────────────────────────
 
@@ -18,12 +17,23 @@ const searchCtrl = new SearchController((results, query) => {
 
 // ── Candidate List View ─────────────────────────────────────
 
+// Cached candidates for the current list view session (avoids getAll per keystroke)
+let _listCache = null;
+
 export async function renderCandidateList() {
   setHeaderTitle('Candidates');
   setHeaderActions(`<a href="#/candidate/new" class="btn btn-primary btn-sm">+ Add Candidate</a>`);
   const content = document.getElementById('content');
 
-  const candidates = await db.getAllCandidates();
+  let candidates;
+  try {
+    candidates = await db.getAllCandidates();
+    _listCache = candidates;
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state"><p>Failed to load candidates.</p></div>`;
+    toast('Database error: ' + err.message, { type: 'error' });
+    return;
+  }
 
   content.innerHTML = `
     <div class="candidates-page">
@@ -57,11 +67,11 @@ export async function renderCandidateList() {
   // Initial render
   renderResults(applyFilters(candidates), '');
 
-  // Search
+  // Search (uses cached candidates — no db round-trip per keystroke)
   const searchInput = document.getElementById('candidate-search');
   searchInput.addEventListener('input', () => {
     searchCtrl.search(searchInput.value, async (query) => {
-      const all = await db.getAllCandidates();
+      const all = _listCache || await db.getAllCandidates();
       return applyFilters(searchCandidates(all, query));
     });
   });
@@ -87,7 +97,7 @@ export async function renderCandidateList() {
 }
 
 async function refreshList(query) {
-  const all = await db.getAllCandidates();
+  const all = _listCache || await db.getAllCandidates();
   const filtered = query.trim() ? applyFilters(searchCandidates(all, query)) : applyFilters(all);
   renderResults(filtered, query);
 }
@@ -218,7 +228,14 @@ function renderCertBadges(certs) {
 
 export async function renderCandidateDetail(id) {
   const content = document.getElementById('content');
-  const candidate = await db.getCandidate(id);
+  let candidate;
+  try {
+    candidate = await db.getCandidate(id);
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state"><p>Failed to load candidate.</p></div>`;
+    toast('Database error: ' + err.message, { type: 'error' });
+    return;
+  }
 
   if (!candidate) {
     content.innerHTML = `<div class="empty-state"><p>Candidate not found.</p><a href="#/candidates" class="btn btn-secondary">Back to List</a></div>`;
@@ -298,19 +315,29 @@ export async function renderCandidateDetail(id) {
   document.getElementById('btn-delete-candidate').addEventListener('click', async () => {
     const ok = await confirm(`Delete ${candidate.firstName} ${candidate.lastName}? This cannot be undone.`);
     if (!ok) return;
-    const snapshot = { ...candidate };
-    await db.deleteCandidate(id);
-    toast(`Deleted ${candidate.firstName} ${candidate.lastName}`, {
-      type: 'info',
-      duration: 10000,
-      actionLabel: 'Undo',
-      action: async () => {
-        await db.put('candidates', snapshot);
-        toast('Restored', { type: 'success' });
-        location.hash = `#/candidate/${id}`;
-      },
-    });
-    location.hash = '#/candidates';
+    try {
+      const snapshot = { ...candidate, certifications: [...(candidate.certifications || [])] };
+      await db.deleteCandidate(id);
+      _listCache = null;
+      toast(`Deleted ${candidate.firstName} ${candidate.lastName}`, {
+        type: 'info',
+        duration: 10000,
+        actionLabel: 'Undo',
+        action: async () => {
+          try {
+            await db.put('candidates', snapshot);
+            _listCache = null;
+            toast('Restored', { type: 'success' });
+            location.hash = `#/candidate/${id}`;
+          } catch (err) {
+            toast('Failed to restore: ' + err.message, { type: 'error' });
+          }
+        },
+      });
+      location.hash = '#/candidates';
+    } catch (err) {
+      toast('Failed to delete: ' + err.message, { type: 'error' });
+    }
   });
 
   // Add cert
@@ -520,10 +547,14 @@ async function openCertModal(candidate, editIndex = null) {
       candidate.certifications.push(newCert);
     }
 
-    await db.updateCandidate(candidate);
-    closeModal();
-    toast(isEdit ? 'Certification updated' : 'Certification added', { type: 'success' });
-    renderCandidateDetail(candidate.id);
+    try {
+      await db.updateCandidate(candidate);
+      closeModal();
+      toast(isEdit ? 'Certification updated' : 'Certification added', { type: 'success' });
+      renderCandidateDetail(candidate.id);
+    } catch (err) {
+      toast('Failed to save certification: ' + err.message, { type: 'error' });
+    }
   });
 }
 
@@ -531,10 +562,14 @@ async function removeCert(candidate, index) {
   const cert = candidate.certifications[index];
   const ok = await confirm(`Remove ${cert.name} certification?`);
   if (!ok) return;
-  candidate.certifications.splice(index, 1);
-  await db.updateCandidate(candidate);
-  toast(`Removed ${cert.name}`, { type: 'info' });
-  renderCandidateDetail(candidate.id);
+  try {
+    candidate.certifications.splice(index, 1);
+    await db.updateCandidate(candidate);
+    toast(`Removed ${cert.name}`, { type: 'info' });
+    renderCandidateDetail(candidate.id);
+  } catch (err) {
+    toast('Failed to remove certification: ' + err.message, { type: 'error' });
+  }
 }
 
 // ── Candidate Form (New / Edit) ─────────────────────────────
@@ -680,15 +715,21 @@ export async function renderCandidateForm(id) {
 
     clearDirty();
 
-    if (isEdit) {
-      Object.assign(candidate, data);
-      await db.updateCandidate(candidate);
-      toast('Candidate updated', { type: 'success' });
-      location.hash = `#/candidate/${id}`;
-    } else {
-      const newCandidate = await db.addCandidate(data);
-      toast('Candidate created', { type: 'success' });
-      location.hash = `#/candidate/${newCandidate.id}`;
+    try {
+      if (isEdit) {
+        Object.assign(candidate, data);
+        await db.updateCandidate(candidate);
+        _listCache = null;
+        toast('Candidate updated', { type: 'success' });
+        location.hash = `#/candidate/${id}`;
+      } else {
+        const newCandidate = await db.addCandidate(data);
+        _listCache = null;
+        toast('Candidate created', { type: 'success' });
+        location.hash = `#/candidate/${newCandidate.id}`;
+      }
+    } catch (err) {
+      toast('Failed to save: ' + err.message, { type: 'error' });
     }
   });
 }

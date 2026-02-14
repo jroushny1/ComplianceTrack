@@ -4,18 +4,9 @@
  */
 
 import db from './db.js';
-import { initModalListeners, setHeaderTitle, setHeaderActions, clearHeaderActions, toast } from './ui.js';
+import { initModalListeners, setHeaderTitle, setHeaderActions, clearHeaderActions, toast, escapeHtml, isDirty, clearDirty } from './ui.js';
 import { renderCandidateList, renderCandidateDetail, renderCandidateForm } from './candidates.js';
 import { renderImportExport, handleBackup } from './import-export.js';
-
-// ── Dirty-form guard ────────────────────────────────────────
-
-let _dirty = false;
-
-export function markDirty() { _dirty = true; }
-export function clearDirty() { _dirty = false; }
-
-export function isDirty() { return _dirty; }
 
 // ── Router ──────────────────────────────────────────────────
 
@@ -72,9 +63,9 @@ function resolveRoute(view, id, subview) {
 }
 
 export function navigate(hash) {
-  if (_dirty) {
+  if (isDirty()) {
     if (!window.confirm('You have unsaved changes. Discard them?')) return;
-    _dirty = false;
+    clearDirty();
   }
   location.hash = hash;
 }
@@ -85,8 +76,15 @@ async function renderDashboard() {
   setHeaderTitle('Dashboard');
   const content = document.getElementById('content');
 
-  const candidates = await db.getAllCandidates();
-  const alertDays = (await db.getSetting('certAlertDays')) || 60;
+  let candidates, alertDays;
+  try {
+    candidates = await db.getAllCandidates();
+    alertDays = (await db.getSetting('certAlertDays')) || 60;
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state"><p>Failed to load dashboard data.</p></div>`;
+    toast('Database error: ' + err.message, { type: 'error' });
+    return;
+  }
 
   // Compute cert stats
   let totalCerts = 0;
@@ -137,7 +135,7 @@ async function renderDashboard() {
             <div class="cert-alert cert-alert--expired">
               <div class="cert-alert-badge">EXPIRED</div>
               <div class="cert-alert-info">
-                <strong>${escTxt(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escTxt(cert.candidateName)}</a>
+                <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
                 <div class="cert-alert-date">Expired ${formatAlertDate(cert.expirationDate)}</div>
               </div>
             </div>
@@ -146,7 +144,7 @@ async function renderDashboard() {
             <div class="cert-alert cert-alert--expiring">
               <div class="cert-alert-badge">${cert.daysRemaining}d</div>
               <div class="cert-alert-info">
-                <strong>${escTxt(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escTxt(cert.candidateName)}</a>
+                <strong>${escapeHtml(cert.name)}</strong> — <a href="#/candidate/${cert.candidateId}" class="link">${escapeHtml(cert.candidateName)}</a>
                 <div class="cert-alert-date">Expires ${formatAlertDate(cert.expirationDate)}</div>
               </div>
             </div>
@@ -170,10 +168,10 @@ async function renderDashboard() {
         <div class="candidate-list compact">
           ${candidates.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5).map(c => `
             <a href="#/candidate/${c.id}" class="candidate-row">
-              <div class="candidate-name">${escTxt(c.firstName)} ${escTxt(c.lastName)}</div>
-              <div class="candidate-meta">${escTxt(c.currentTitle || '')}${c.currentEmployer ? ` at ${escTxt(c.currentEmployer)}` : ''}</div>
+              <div class="candidate-name">${escapeHtml(c.firstName)} ${escapeHtml(c.lastName)}</div>
+              <div class="candidate-meta">${escapeHtml(c.currentTitle || '')}${c.currentEmployer ? ` at ${escapeHtml(c.currentEmployer)}` : ''}</div>
               <div class="candidate-certs">
-                ${(c.certifications || []).slice(0, 3).map(cert => `<span class="cert-badge cert-badge--sm">${escTxt(cert.name)}</span>`).join('')}
+                ${(c.certifications || []).slice(0, 3).map(cert => `<span class="cert-badge cert-badge--sm">${escapeHtml(cert.name)}</span>`).join('')}
                 ${(c.certifications || []).length > 3 ? `<span class="cert-badge cert-badge--sm cert-badge--more">+${c.certifications.length - 3}</span>` : ''}
               </div>
             </a>
@@ -214,7 +212,7 @@ async function renderSettings() {
         <div id="custom-certs-list">
           ${customCerts.map((cert, i) => `
             <div class="custom-cert-row" data-index="${i}">
-              <span>${escTxt(cert.name)} <span class="text-secondary">— ${escTxt(cert.issuingBody)}</span></span>
+              <span>${escapeHtml(cert.name)} <span class="text-secondary">— ${escapeHtml(cert.issuingBody)}</span></span>
               <button class="btn btn-sm btn-danger remove-custom-cert" data-index="${i}">Remove</button>
             </div>
           `).join('')}
@@ -238,37 +236,49 @@ async function renderSettings() {
   // Settings form
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const days = parseInt(e.target.certAlertDays.value, 10);
-    if (days > 0) {
-      await db.setSetting('certAlertDays', days);
-      toast('Settings saved', { type: 'success' });
+    try {
+      const days = parseInt(e.target.certAlertDays.value, 10);
+      if (days > 0) {
+        await db.setSetting('certAlertDays', days);
+        toast('Settings saved', { type: 'success' });
+      }
+    } catch (err) {
+      toast('Failed to save settings: ' + err.message, { type: 'error' });
     }
   });
 
   // Add custom cert
   document.getElementById('add-custom-cert-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = e.target.name.value.trim();
-    const issuingBody = e.target.issuingBody.value.trim();
-    const renewal = e.target.renewal.value.trim();
-    if (!name || !issuingBody) return;
-    const certs = (await db.getSetting('customCertTypes')) || [];
-    certs.push({ name, issuingBody, renewal, type: 'custom' });
-    await db.setSetting('customCertTypes', certs);
-    toast(`Added "${name}"`, { type: 'success' });
-    renderSettings();
+    try {
+      const name = e.target.name.value.trim();
+      const issuingBody = e.target.issuingBody.value.trim();
+      const renewal = e.target.renewal.value.trim();
+      if (!name || !issuingBody) return;
+      const certs = (await db.getSetting('customCertTypes')) || [];
+      certs.push({ name, issuingBody, renewal, type: 'custom' });
+      await db.setSetting('customCertTypes', certs);
+      toast(`Added "${name}"`, { type: 'success' });
+      renderSettings();
+    } catch (err) {
+      toast('Failed to add cert type: ' + err.message, { type: 'error' });
+    }
   });
 
   // Remove custom cert
   content.addEventListener('click', async (e) => {
     const btn = e.target.closest('.remove-custom-cert');
     if (!btn) return;
-    const idx = parseInt(btn.dataset.index, 10);
-    const certs = (await db.getSetting('customCertTypes')) || [];
-    certs.splice(idx, 1);
-    await db.setSetting('customCertTypes', certs);
-    toast('Removed', { type: 'info' });
-    renderSettings();
+    try {
+      const idx = parseInt(btn.dataset.index, 10);
+      const certs = (await db.getSetting('customCertTypes')) || [];
+      certs.splice(idx, 1);
+      await db.setSetting('customCertTypes', certs);
+      toast('Removed', { type: 'info' });
+      renderSettings();
+    } catch (err) {
+      toast('Failed to remove: ' + err.message, { type: 'error' });
+    }
   });
 
   // Export
@@ -277,21 +287,18 @@ async function renderSettings() {
   // Clear all
   document.getElementById('btn-clear-all').addEventListener('click', async () => {
     if (!window.confirm('This will permanently delete ALL data. Export a backup first. Continue?')) return;
-    await db.clear('candidates');
-    await db.clear('settings');
-    toast('All data cleared', { type: 'info' });
-    renderSettings();
+    try {
+      await db.clear('candidates');
+      await db.clear('settings');
+      toast('All data cleared', { type: 'info' });
+      renderSettings();
+    } catch (err) {
+      toast('Failed to clear data: ' + err.message, { type: 'error' });
+    }
   });
 }
 
 // ── Helpers ─────────────────────────────────────────────────
-
-function escTxt(str) {
-  if (!str) return '';
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
 
 function formatAlertDate(iso) {
   if (!iso) return '';
@@ -330,7 +337,7 @@ async function init() {
       <div class="empty-state">
         <h2>Database Error</h2>
         <p>Could not open IndexedDB. Try using a different browser or clearing site data.</p>
-        <pre>${escTxt(err.message)}</pre>
+        <pre>${escapeHtml(err.message)}</pre>
       </div>
     `;
     return;
@@ -347,13 +354,12 @@ async function init() {
 
   // Route handling
   window.addEventListener('hashchange', () => {
-    if (_dirty) {
+    if (isDirty()) {
       if (!window.confirm('You have unsaved changes. Discard them?')) {
-        // Can't truly prevent hashchange, but we can go back
         history.back();
         return;
       }
-      _dirty = false;
+      clearDirty();
     }
     handleRoute();
   });

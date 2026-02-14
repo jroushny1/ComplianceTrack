@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'ComplianceTrackDB';
-const DB_VERSION = 1;
+export const DB_VERSION = 1;
 
 class ComplianceDB {
   constructor() {
@@ -152,14 +152,28 @@ class ComplianceDB {
 
   async addCandidate(data) {
     const candidate = this.createCandidate(data);
+    validateCandidate(candidate);
     await this.add('candidates', candidate);
     return candidate;
   }
 
   async updateCandidate(candidate) {
+    validateCandidate(candidate);
     candidate.updatedAt = new Date().toISOString();
     await this.put('candidates', candidate);
     return candidate;
+  }
+
+  async addCandidatesBatch(candidates) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('candidates', 'readwrite');
+      const store = tx.objectStore('candidates');
+      for (const c of candidates) {
+        store.put(c);
+      }
+      tx.oncomplete = () => resolve(candidates.length);
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
   async deleteCandidate(id) {
@@ -235,6 +249,23 @@ class ComplianceDB {
       await new Promise(r => setTimeout(r, 0));
     }
     return imported;
+  }
+}
+
+// ── Schema Validation ─────────────────────────────────────────
+
+export function validateCandidate(data) {
+  if (!data.firstName || !String(data.firstName).trim()) {
+    throw new Error('Missing required field: firstName');
+  }
+  if (!data.lastName || !String(data.lastName).trim()) {
+    throw new Error('Missing required field: lastName');
+  }
+  if (data.certifications && !Array.isArray(data.certifications)) {
+    throw new Error('certifications must be an array');
+  }
+  if (data.skills && !Array.isArray(data.skills)) {
+    throw new Error('skills must be an array');
   }
 }
 

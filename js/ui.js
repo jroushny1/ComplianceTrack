@@ -168,52 +168,13 @@ export class SearchController {
   }
 }
 
-// ── Form Helpers ────────────────────────────────────────────
+// ── Dirty-Form Guard ────────────────────────────────────────
 
-export function getFormData(form) {
-  const data = {};
-  const formData = new FormData(form);
-  for (const [key, value] of formData.entries()) {
-    if (data[key] !== undefined) {
-      // Handle multiple values (e.g., checkboxes)
-      if (!Array.isArray(data[key])) data[key] = [data[key]];
-      data[key].push(value);
-    } else {
-      data[key] = value;
-    }
-  }
-  return data;
-}
+let _dirty = false;
 
-export function setFormData(form, data) {
-  for (const [key, value] of Object.entries(data)) {
-    const field = form.elements[key];
-    if (!field) continue;
-    if (field.type === 'checkbox') {
-      field.checked = Boolean(value);
-    } else {
-      field.value = value ?? '';
-    }
-  }
-}
-
-export function clearForm(form) {
-  form.reset();
-}
-
-export function validateRequired(form, fields) {
-  const errors = [];
-  for (const name of fields) {
-    const field = form.elements[name];
-    if (!field || !field.value.trim()) {
-      errors.push(name);
-      field?.classList.add('field-error');
-    } else {
-      field?.classList.remove('field-error');
-    }
-  }
-  return errors;
-}
+export function markDirty() { _dirty = true; }
+export function clearDirty() { _dirty = false; }
+export function isDirty() { return _dirty; }
 
 // ── Formatting Helpers ──────────────────────────────────────
 
