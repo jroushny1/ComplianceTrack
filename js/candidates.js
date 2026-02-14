@@ -322,15 +322,12 @@ export async function renderCandidateDetail(id) {
     </div>
   `;
 
-  // Delete
+  // Delete (atomic cascade — single transaction, full undo)
   document.getElementById('btn-delete-candidate').addEventListener('click', async () => {
-    const ok = await confirm(`Delete ${candidate.firstName} ${candidate.lastName}? This cannot be undone.`);
+    const ok = await confirm(`Delete ${candidate.firstName} ${candidate.lastName}? This will also remove their pipeline entries and activities.`);
     if (!ok) return;
     try {
-      const snapshot = { ...candidate, certifications: [...(candidate.certifications || [])] };
-      await db.deletePipelineByCandidate(id);
-      await db.deleteActivitiesByCandidate(id);
-      await db.deleteCandidate(id);
+      const snapshot = await db.deleteCandidateCascade(id);
       _listCache = null;
       toast(`Deleted ${candidate.firstName} ${candidate.lastName}`, {
         type: 'info',
@@ -338,9 +335,9 @@ export async function renderCandidateDetail(id) {
         actionLabel: 'Undo',
         action: async () => {
           try {
-            await db.put('candidates', snapshot);
+            await db.restoreCandidateCascade(snapshot);
             _listCache = null;
-            toast('Restored', { type: 'success' });
+            toast('Restored (person, pipeline, and activities)', { type: 'success' });
             location.hash = `#/candidate/${id}`;
           } catch (err) {
             toast('Failed to restore: ' + err.message, { type: 'error' });

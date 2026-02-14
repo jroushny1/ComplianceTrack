@@ -3,7 +3,7 @@
  * Cache-first for JS/CSS/fonts, network-first for HTML
  */
 
-const CACHE_NAME = 'compliancetrack-v4';
+const CACHE_NAME = 'compliancetrack-v5';
 
 const ASSETS = [
   './',

@@ -184,6 +184,44 @@ class ComplianceDB {
     await this.delete('candidates', id);
   }
 
+  /**
+   * Atomically delete a candidate and all related pipeline/activity records
+   * in a single transaction. Returns a snapshot for undo.
+   */
+  async deleteCandidateCascade(candidateId) {
+    const [candidate, pipelineEntries, activities] = await Promise.all([
+      this.getCandidate(candidateId),
+      this.getPipelineByCandidate(candidateId),
+      this.getActivitiesByCandidate(candidateId),
+    ]);
+    if (!candidate) throw new Error('Person not found');
+
+    await new Promise((resolve, reject) => {
+      const tx = this.db.transaction(['candidates', 'pipeline', 'activities'], 'readwrite');
+      tx.objectStore('candidates').delete(candidateId);
+      for (const e of pipelineEntries) tx.objectStore('pipeline').delete(e.id);
+      for (const a of activities) tx.objectStore('activities').delete(a.id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    return { candidate, pipelineEntries, activities };
+  }
+
+  /**
+   * Restore a candidate and all related records from a cascade-delete snapshot.
+   */
+  async restoreCandidateCascade({ candidate, pipelineEntries, activities }) {
+    await new Promise((resolve, reject) => {
+      const tx = this.db.transaction(['candidates', 'pipeline', 'activities'], 'readwrite');
+      tx.objectStore('candidates').put(candidate);
+      for (const e of pipelineEntries) tx.objectStore('pipeline').put(e);
+      for (const a of activities) tx.objectStore('activities').put(a);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async getCandidate(id) {
     return this.get('candidates', id);
   }

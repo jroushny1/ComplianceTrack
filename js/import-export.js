@@ -630,13 +630,15 @@ async function handleJsonRestore(file) {
       }
     }
 
-    // Restore activities
+    // Restore activities (skip orphans whose candidateId doesn't exist)
     let activitiesImported = 0;
     if (data.activities && Array.isArray(data.activities)) {
       const existingActivities = new Set((await db.getAllActivities()).map(a => a.id));
+      const allCandidateIds = new Set((await db.getAllCandidates()).map(c => c.id));
       const toImportActivities = [];
       for (const a of data.activities) {
         if (!a.id || existingActivities.has(a.id)) continue;
+        if (a.candidateId && !allCandidateIds.has(a.candidateId)) continue; // skip orphans
         try { validateActivity(a); toImportActivities.push(a); } catch { /* skip invalid */ }
       }
       if (toImportActivities.length > 0) {

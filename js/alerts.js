@@ -10,7 +10,7 @@ import { escapeHtml, formatDate } from './ui.js';
  * Get all overdue and upcoming follow-ups.
  * Returns { overdue: [...], upcoming: [...] } sorted by date.
  */
-export async function getFollowUpAlerts(daysAhead = 7) {
+export async function getFollowUpAlerts(daysAhead = 7, candidates = null) {
   const activities = await db.getActivitiesWithFollowUp();
   const now = new Date();
   const todayStr = now.toISOString().slice(0, 10);
@@ -18,7 +18,7 @@ export async function getFollowUpAlerts(daysAhead = 7) {
   futureDate.setDate(futureDate.getDate() + daysAhead);
   const futureStr = futureDate.toISOString().slice(0, 10);
 
-  const candidates = await db.getAllCandidates();
+  if (!candidates) candidates = await db.getAllCandidates();
   const candidateMap = new Map(candidates.map(c => [c.id, c]));
 
   const overdue = [];

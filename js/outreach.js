@@ -6,6 +6,14 @@
 import db from './db.js';
 import { openModal, closeModal, toast, escapeHtml, formatDate, setHeaderTitle, setHeaderActions, SearchController } from './ui.js';
 
+const TYPE_ICONS = {
+  email: '&#9993;',
+  call: '&#9742;',
+  interview: '&#128197;',
+  note: '&#9998;',
+  submission: '&#10148;',
+};
+
 // ── Activity List (all activities, searchable) ─────────────
 
 export async function renderOutreach() {
@@ -113,6 +121,11 @@ export async function renderOutreach() {
 
   // Event delegation for activity rows
   listContainer.addEventListener('click', (e) => {
+    // Let links navigate without opening the detail modal
+    if (e.target.closest('.activity-link')) {
+      e.stopPropagation();
+      return;
+    }
     const row = e.target.closest('.activity-row');
     if (!row) return;
     const deleteBtn = e.target.closest('.activity-delete');
@@ -128,18 +141,11 @@ export async function renderOutreach() {
 function renderActivityRow(activity, candidateMap, jobMap) {
   const cand = candidateMap.get(activity.candidateId);
   const job = jobMap.get(activity.jobId);
-  const typeIcons = {
-    email: '&#9993;',
-    call: '&#9742;',
-    interview: '&#128197;',
-    note: '&#9998;',
-    submission: '&#10148;',
-  };
 
   return `
     <div class="activity-row" data-id="${activity.id}">
       <div class="activity-type-icon activity-type--${activity.type}" title="${escapeHtml(activity.type)}">
-        ${typeIcons[activity.type] || '&#9679;'}
+        ${TYPE_ICONS[activity.type] || '&#9679;'}
       </div>
       <div class="activity-row-content">
         <div class="activity-row-header">
@@ -147,8 +153,8 @@ function renderActivityRow(activity, candidateMap, jobMap) {
           ${activity.status ? `<span class="activity-status activity-status--${activity.status}">${escapeHtml(activity.status)}</span>` : ''}
         </div>
         <div class="activity-row-meta">
-          ${cand ? `<a href="#/candidate/${cand.id}" class="link" onclick="event.stopPropagation()">${escapeHtml(cand.firstName)} ${escapeHtml(cand.lastName)}</a>` : '<span class="text-secondary">Unknown person</span>'}
-          ${job ? ` — <a href="#/job/${job.id}" class="link" onclick="event.stopPropagation()">${escapeHtml(job.title)}</a>` : ''}
+          ${cand ? `<a href="#/candidate/${cand.id}" class="link activity-link">${escapeHtml(cand.firstName)} ${escapeHtml(cand.lastName)}</a>` : '<span class="text-secondary">Unknown person</span>'}
+          ${job ? ` — <a href="#/job/${job.id}" class="link activity-link">${escapeHtml(job.title)}</a>` : ''}
         </div>
         ${activity.followUpDate ? `<div class="activity-followup">Follow up: ${formatDate(activity.followUpDate)}</div>` : ''}
       </div>
@@ -392,14 +398,14 @@ function openTemplateModal(templates, editIndex) {
     </div>
     <div class="form-group">
       <label for="tpl-subject">Subject Line</label>
-      <input type="text" id="tpl-subject" class="form-input" value="${escapeHtml(tpl.subject || '')}" placeholder="e.g., {{firstName}} — Opportunity at {{companyName}}">
+      <input type="text" id="tpl-subject" class="form-input" value="${escapeHtml(tpl.subject || '')}" placeholder="e.g., {{firstName}} — Opportunity at {{currentEmployer}}">
     </div>
     <div class="form-group">
       <label for="tpl-body">Body</label>
       <textarea id="tpl-body" class="form-textarea" rows="8" placeholder="Hi {{firstName}},\n\nI wanted to reach out about…">${escapeHtml(tpl.body || '')}</textarea>
     </div>
     <p class="text-secondary" style="font-size: 12px; margin-top: 4px;">
-      Available placeholders: <code>{{firstName}}</code> <code>{{lastName}}</code> <code>{{email}}</code> <code>{{currentTitle}}</code> <code>{{currentEmployer}}</code> <code>{{jobTitle}}</code> <code>{{companyName}}</code>
+      Available placeholders: <code>{{firstName}}</code> <code>{{lastName}}</code> <code>{{email}}</code> <code>{{currentTitle}}</code> <code>{{currentEmployer}}</code> <code>{{jobTitle}}</code>
     </p>
   `;
 
@@ -450,15 +456,14 @@ function openTemplateModal(templates, editIndex) {
 
 const TEMPLATE_PLACEHOLDERS = new Set([
   'firstName', 'lastName', 'email', 'currentTitle', 'currentEmployer',
-  'jobTitle', 'companyName',
+  'jobTitle',
 ]);
 
 function fillTemplate(text, candidate, job) {
   return text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
     if (!TEMPLATE_PLACEHOLDERS.has(key)) return match;
-    if (key === 'jobTitle') return job ? escapeHtml(job.title) : match;
-    if (key === 'companyName') return job?.clientId ? match : (job ? escapeHtml(job.title) : match);
-    if (candidate && candidate[key]) return escapeHtml(candidate[key]);
+    if (key === 'jobTitle') return job ? job.title : match;
+    if (candidate && candidate[key]) return candidate[key];
     return match;
   });
 }
@@ -485,21 +490,13 @@ export async function renderActivityTimeline(candidateId, container) {
   // Sort newest first
   activities.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  const typeIcons = {
-    email: '&#9993;',
-    call: '&#9742;',
-    interview: '&#128197;',
-    note: '&#9998;',
-    submission: '&#10148;',
-  };
-
   container.innerHTML = `
     <div class="activity-timeline">
       ${activities.map(a => {
         const job = jobMap.get(a.jobId);
         return `
           <div class="timeline-item">
-            <div class="timeline-icon activity-type--${a.type}">${typeIcons[a.type] || '&#9679;'}</div>
+            <div class="timeline-icon activity-type--${a.type}">${TYPE_ICONS[a.type] || '&#9679;'}</div>
             <div class="timeline-content">
               <div class="timeline-header">
                 <span class="timeline-subject">${escapeHtml(a.subject || a.type)}</span>

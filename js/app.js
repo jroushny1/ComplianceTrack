@@ -100,17 +100,16 @@ async function renderDashboard() {
       <div class="dashboard-section"><div class="skeleton-line skeleton-lg"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
     </div>`;
 
-  // Fetch all data in parallel — use allSettled so partial failures don't block everything
+  // Fetch core data in parallel — use allSettled so partial failures don't block everything
   const results = await Promise.allSettled([
     db.getAllCandidates(),
     db.getAllJobs(),
     db.getAllClients(),
     db.getAllActivities(),
-    getFollowUpAlerts(),
     db.getAll('pipeline'),
   ]);
 
-  const [candidatesR, jobsR, clientsR, activitiesR, followUpsR, pipelineR] = results;
+  const [candidatesR, jobsR, clientsR, activitiesR, pipelineR] = results;
 
   if (candidatesR.status === 'rejected') {
     content.innerHTML = `<div class="empty-state"><p>Failed to load dashboard data.</p></div>`;
@@ -122,8 +121,11 @@ async function renderDashboard() {
   const jobs = jobsR.status === 'fulfilled' ? jobsR.value : [];
   const clients = clientsR.status === 'fulfilled' ? clientsR.value : [];
   const activities = activitiesR.status === 'fulfilled' ? activitiesR.value : [];
-  const followUps = followUpsR.status === 'fulfilled' ? followUpsR.value : { overdue: [], upcoming: [] };
   const pipelineEntries = pipelineR.status === 'fulfilled' ? pipelineR.value : [];
+
+  // Compute follow-ups using already-fetched candidates (avoids duplicate DB read)
+  let followUps = { overdue: [], upcoming: [] };
+  try { followUps = await getFollowUpAlerts(7, candidates); } catch { /* non-critical */ }
   const openJobs = jobs.filter(j => j.status === 'open');
 
   // Pipeline summary per job
